@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ChurchApplication, ApplicationStatus, ChurchLeader, ChurchGathering, EmailTemplate, EmailType } from '../types';
+import { ChurchApplication, ApplicationStatus, ChurchLeader, ChurchGathering, EmailTemplate, EmailType, AdminUser, UserProfile } from '../types';
 import { Button } from './Button';
-import { Check, X, MapPin, Globe, ExternalLink, ArrowLeft, LogOut, Lock, User as UserIcon, BookOpen, ShieldCheck, Trash2, Eye, AlertTriangle, Edit, Download, Upload, Settings, RefreshCw, Ban, Slash } from 'lucide-react';
-import { auth, loginWithEmail, registerWithEmail, logout, subscribeToAllApplications, updateApplicationStatus, User, onAuthStateChanged, deleteChurchApplication, updateChurchProfile, submitApplication, updateChurchCoordinates, uploadChurchLogo, sendEmail, saveEmailTemplate, getEmailTemplate, resendSystemEmail, approveApplication, createChurchUserAndSendResetEmailClient, backfillGeocodes, regeocodeAddress } from '../services/firebase';
+import { Check, X, MapPin, Globe, ExternalLink, ArrowLeft, LogOut, Lock, User as UserIcon, BookOpen, ShieldCheck, Trash2, Eye, AlertTriangle, Edit, Download, Upload, Settings, RefreshCw, Ban, Slash, PlusCircle } from 'lucide-react';
+import { auth, loginWithEmail, registerWithEmail, logout, subscribeToAllApplications, updateApplicationStatus, User, onAuthStateChanged, deleteChurchApplication, updateChurchProfile, submitApplication, updateChurchCoordinates, uploadChurchLogo, sendEmail, saveEmailTemplate, getEmailTemplate, resendSystemEmail, approveApplication, createChurchUserAndSendResetEmailClient, backfillGeocodes, regeocodeAddress, getAllUsers, setAdminRole, removeAdminRole, createAdminUser, getUserProfile, updateUserProfileRole } from '../services/firebase';
 import { Mail, Send } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -16,12 +16,13 @@ const InfoRow: React.FC<{ label: string; value?: string | null }> = ({ label, va
   </div>
 );
 
-type AdminView = 'pending' | 'approved' | 'rejected' | 'leaders' | 'email' | 'settings';
+type AdminView = 'pending' | 'approved' | 'rejected' | 'leaders' | 'email' | 'settings' | 'users';
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [applications, setApplications] = useState<ChurchApplication[]>([]);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
+  const [currentUserProfile, setCurrentUserProfile] = useState<UserProfile | null>(null); // To store current user's profile
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [viewingChurch, setViewingChurch] = useState<ChurchApplication | null>(null);
   const [deletingChurch, setDeletingChurch] = useState<ChurchApplication | null>(null);
@@ -29,6 +30,85 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [currentView, setCurrentView] = useState<AdminView>('pending');
   const [isProcessingPortalAccount, setIsProcessingPortalAccount] = useState(false); // Moved state up
   
+  // User Management State
+  const [allUsers, setAllUsers] = useState<AdminUser[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [addingAdmin, setAddingAdmin] = useState(false);
+  const [newAdminEmail, setNewAdminEmail] = useState('');
+  const [newAdminPassword, setNewAdminPassword] = useState('');
+  const [userActionLoading, setUserActionLoading] = useState<string | null>(null); // Stores UID of user being acted upon
+
+  const fetchAllUsers = async () => {
+    setLoadingUsers(true);
+    try {
+      const usersData = await getAllUsers();
+      // Augment with Firestore profile data if available
+      const usersWithProfiles = await Promise.all(usersData.map(async (u) => {
+        const profile = await getUserProfile(u.uid);
+        return { ...u, role: profile?.role || 'guest' }; // Default to 'guest' if no profile
+      }));
+      setAllUsers(usersWithProfiles);
+    } catch (error) {
+      console.error("Error fetching all users:", error);
+      alert("Failed to load users. You might not have sufficient permissions.");
+    } finally {
+      setLoadingUsers(false);
+    }
+  };
+
+  const handleAddAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAdminEmail || !newAdminPassword) {
+      alert("Email and password are required.");
+      return;
+    }
+    setAddingAdmin(true);
+    try {
+      await createAdminUser(newAdminEmail, newAdminPassword);
+      alert('Admin user created successfully! They will see the admin dashboard on login.');
+      setNewAdminEmail('');
+      setNewAdminPassword('');
+      await fetchAllUsers(); // Refresh the list
+    } catch (error: any) {
+      console.error("Error creating admin user:", error);
+      alert(`Failed to create admin: ${error.message || 'Unknown error'}`);
+    } finally {
+      setAddingAdmin(false);
+    }
+  };
+
+  const handleSetAdminRole = async (uid: string, email: string) => {
+    if (!confirm(`Are you sure you want to grant admin privileges to ${email}?`)) return;
+    setUserActionLoading(uid);
+    try {
+      await setAdminRole(uid);
+      await updateUserProfileRole(uid, 'admin'); // Update Firestore profile
+      alert(`${email} is now an admin.`);
+      await fetchAllUsers();
+    } catch (error: any) {
+      console.error("Error setting admin role:", error);
+      alert(`Failed to set admin role: ${error.message || 'Unknown error'}`);
+    } finally {
+      setUserActionLoading(null);
+    }
+  };
+
+  const handleRemoveAdminRole = async (uid: string, email: string) => {
+    if (!confirm(`Are you sure you want to revoke admin privileges from ${email}? They will no longer have access to this dashboard.`)) return;
+    setUserActionLoading(uid);
+    try {
+      await removeAdminRole(uid);
+      await updateUserProfileRole(uid, 'guest'); // Update Firestore profile
+      alert(`${email}'s admin privileges have been revoked.`);
+      await fetchAllUsers();
+    } catch (error: any) {
+      console.error("Error removing admin role:", error);
+      alert(`Failed to remove admin role: ${error.message || 'Unknown error'}`);
+    } finally {
+      setUserActionLoading(null);
+    }
+  };
+
   const handleCreatePortalAccount = async (churchId: string, applicantEmail: string, churchName: string) => {
     if (!confirm(`Are you sure you want to create a portal account and send a password setup email to ${applicantEmail} for ${churchName}?`)) {
       return;
@@ -146,6 +226,151 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [leaderSortBy, setLeaderSortBy] = useState<'name' | 'role' | 'church'>('name');
   const [leaderSortOrder, setLeaderSortOrder] = useState<'asc' | 'desc'>('asc');
 
+  // Settings Tab State
+  const [settingsTab, setSettingsTab] = useState<'email' | 'application' | 'general'>('email');
+
+  // Application Form Field Types
+  type FormFieldType = 'text' | 'email' | 'tel' | 'url' | 'number' | 'textarea' | 'select' | 'radio' | 'checkbox' | 'password' | 'dynamic_array';
+  
+  interface FormField {
+    id: string;
+    name: string;
+    label: string;
+    type: FormFieldType;
+    required: boolean;
+    placeholder?: string;
+    section: string;
+    options?: string[]; // For select/radio fields
+    min?: number; // For number fields
+    rows?: number; // For textarea fields
+    order: number;
+    description?: string;
+  }
+
+  // Initial form fields based on current ApplicationForm
+  const [formFields, setFormFields] = useState<FormField[]>([
+    // Account Setup Section
+    { id: 'applicantFirstName', name: 'applicantFirstName', label: 'First Name', type: 'text', required: true, section: 'Account Setup', order: 1 },
+    { id: 'applicantLastName', name: 'applicantLastName', label: 'Last Name', type: 'text', required: true, section: 'Account Setup', order: 2 },
+    { id: 'applicantEmail', name: 'applicantEmail', label: 'Email Address', type: 'email', required: true, section: 'Account Setup', order: 3, placeholder: 'name@example.com', description: 'Your login email' },
+    { id: 'password', name: 'password', label: 'Password', type: 'password', required: true, section: 'Account Setup', order: 4, description: 'Min. 6 characters' },
+    { id: 'confirmPassword', name: 'confirmPassword', label: 'Confirm Password', type: 'password', required: true, section: 'Account Setup', order: 5 },
+    
+    // Church Information Section
+    { id: 'churchName', name: 'churchName', label: 'Church Name', type: 'text', required: true, section: 'Church Information', order: 10 },
+    { id: 'churchAddress.street', name: 'churchAddress.street', label: 'Street Address', type: 'text', required: true, section: 'Church Information', order: 11, placeholder: 'Street Address' },
+    { id: 'churchAddress.aptUnit', name: 'churchAddress.aptUnit', label: 'Apt/Unit/Box', type: 'text', required: false, section: 'Church Information', order: 12, placeholder: 'Apt/unit/box (optional)' },
+    { id: 'churchAddress.city', name: 'churchAddress.city', label: 'City', type: 'text', required: true, section: 'Church Information', order: 13, placeholder: 'City' },
+    { id: 'churchAddress.state', name: 'churchAddress.state', label: 'State / Province', type: 'text', required: true, section: 'Church Information', order: 14, placeholder: 'State / Province' },
+    { id: 'churchAddress.postalCode', name: 'churchAddress.postalCode', label: 'Postal Code', type: 'text', required: true, section: 'Church Information', order: 15, placeholder: 'Postal Code' },
+    { id: 'churchAddress.country', name: 'churchAddress.country', label: 'Country', type: 'text', required: true, section: 'Church Information', order: 16, placeholder: 'Country' },
+    { id: 'churchPhone', name: 'churchPhone', label: 'Phone Number', type: 'tel', required: true, section: 'Church Information', order: 17 },
+    { id: 'connections.website', name: 'connections.website', label: 'Church Website', type: 'url', required: false, section: 'Church Information', order: 18, placeholder: 'https://' },
+    { id: 'churchEmail', name: 'churchEmail', label: 'Church Public Email', type: 'email', required: false, section: 'Church Information', order: 19 },
+    { id: 'churchDescription', name: 'churchDescription', label: 'Briefly describe your church', type: 'textarea', required: true, section: 'Church Information', order: 20, rows: 4 },
+    
+    // Leadership Section
+    { id: 'leaders', name: 'leaders', label: 'Leadership', type: 'dynamic_array', required: false, section: 'Leadership', order: 30, description: 'Optional - can add later' },
+    
+    // Doctrine & Practice Section
+    { id: 'pluralityOfElders', name: 'pluralityOfElders', label: 'Is Your Local Church Led By a Plurality of Elders?', type: 'select', required: true, section: 'Doctrine & Practice', order: 40, options: ['Yes', 'No', 'No, but working toward it.'] },
+    { id: 'churchDiscipline', name: 'churchDiscipline', label: 'Does Your Local Church Practice Church Discipline?', type: 'select', required: true, section: 'Doctrine & Practice', order: 41, options: ['Yes', 'No', 'No, but working toward it.'] },
+    { id: 'ssjgSigned', name: 'ssjgSigned', label: 'Has your church leadership signed the Statement on Social Justice and the Gospel?', type: 'select', required: true, section: 'Doctrine & Practice', order: 42, options: ['Yes', 'No', 'No, but agree with it'] },
+    { id: 'confessionAffirmation', name: 'confessionAffirmation', label: 'Can you as the pastor(s) affirm the 1689 London Baptist Confession of Faith? If not, please explain.', type: 'textarea', required: true, section: 'Doctrine & Practice', order: 43, rows: 5 },
+    
+    // Network Dues Section
+    { id: 'paymentAmount', name: 'paymentAmount', label: 'Annual Contribution Amount ($)', type: 'number', required: true, section: 'Network Dues', order: 50, min: 500, placeholder: '500', description: 'Minimum: $500' },
+    { id: 'paymentFrequency', name: 'paymentFrequency', label: 'Payment Frequency', type: 'radio', required: true, section: 'Network Dues', order: 51, options: ['yearly', 'one_time'] },
+  ]);
+
+  const [editingField, setEditingField] = useState<FormField | null>(null);
+  const [isAddingField, setIsAddingField] = useState(false);
+
+  // Form field management functions
+  const getSortedFormFields = () => {
+    return formFields.sort((a, b) => a.order - b.order);
+  };
+
+  const getFieldsBySection = () => {
+    const sections: Record<string, FormField[]> = {};
+    getSortedFormFields().forEach(field => {
+      if (!sections[field.section]) {
+        sections[field.section] = [];
+      }
+      sections[field.section].push(field);
+    });
+    return sections;
+  };
+
+  const addNewField = () => {
+    const newField: FormField = {
+      id: `field_${Date.now()}`,
+      name: '',
+      label: '',
+      type: 'text',
+      required: false,
+      section: 'Church Information',
+      order: Math.max(...formFields.map(f => f.order), 0) + 10
+    };
+    setEditingField(newField);
+    setIsAddingField(true);
+  };
+
+  const saveField = (field: FormField) => {
+    if (isAddingField) {
+      setFormFields([...formFields, field]);
+      setIsAddingField(false);
+    } else {
+      setFormFields(formFields.map(f => f.id === field.id ? field : f));
+    }
+    setEditingField(null);
+  };
+
+  const deleteField = (fieldId: string) => {
+    if (confirm('Are you sure you want to delete this field? This action cannot be undone.')) {
+      setFormFields(formFields.filter(f => f.id !== fieldId));
+    }
+  };
+
+  const moveField = (fieldId: string, direction: 'up' | 'down') => {
+    const field = formFields.find(f => f.id === fieldId);
+    if (!field) return;
+
+    const sectionFields = formFields.filter(f => f.section === field.section).sort((a, b) => a.order - b.order);
+    const currentIndex = sectionFields.findIndex(f => f.id === fieldId);
+    
+    if (direction === 'up' && currentIndex > 0) {
+      const previousField = sectionFields[currentIndex - 1];
+      const newOrder = previousField.order;
+      const updatedFields = formFields.map(f => {
+        if (f.id === field.id) return { ...f, order: newOrder };
+        if (f.id === previousField.id) return { ...f, order: field.order };
+        return f;
+      });
+      setFormFields(updatedFields);
+    } else if (direction === 'down' && currentIndex < sectionFields.length - 1) {
+      const nextField = sectionFields[currentIndex + 1];
+      const newOrder = nextField.order;
+      const updatedFields = formFields.map(f => {
+        if (f.id === field.id) return { ...f, order: newOrder };
+        if (f.id === nextField.id) return { ...f, order: field.order };
+        return f;
+      });
+      setFormFields(updatedFields);
+    }
+  };
+
+  const duplicateField = (field: FormField) => {
+    const newField: FormField = {
+      ...field,
+      id: `field_${Date.now()}`,
+      name: `${field.name}_copy`,
+      label: `${field.label} (Copy)`,
+      order: field.order + 1
+    };
+    setFormFields([...formFields, newField]);
+  };
+
   // Auth Form State
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -154,8 +379,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [authLoading, setAuthLoading] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
+      if (currentUser) {
+        // Fetch user profile to check role
+        const profile = await getUserProfile(currentUser.uid);
+        setCurrentUserProfile(profile);
+        if (profile?.role === 'admin') {
+          await fetchAllUsers(); // Only fetch users if current user is admin
+        }
+      } else {
+        setCurrentUserProfile(null);
+      }
       setLoadingAuth(false);
     });
     return () => unsubscribe();
@@ -624,7 +859,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     return <div className="min-h-screen bg-gray-50 flex items-center justify-center"><div className="animate-spin text-brand-900"><Globe className="w-8 h-8" /></div></div>;
   }
 
-  if (!user) {
+  if (!user || currentUserProfile?.role !== 'admin') {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
         <div className="bg-white p-8 rounded-xl shadow-xl max-w-md w-full text-center">
@@ -635,7 +870,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
             {isRegistering ? 'Create Admin Account' : 'Admin Access Required'}
           </h2>
           <p className="text-gray-600 mb-6">
-            {isRegistering ? 'Register to manage the network.' : 'Please sign in to manage church applications.'}
+            {currentUserProfile && currentUserProfile.role !== 'admin'
+              ? "Your account does not have administrator privileges."
+              : isRegistering ? 'Register to manage the network.' : 'Please sign in to manage church applications.'}
           </p>
           
           <form onSubmit={handleAuth} className="space-y-4 text-left">
@@ -904,7 +1141,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       {church.status === ApplicationStatus.APPROVED && !church.userId && (
                         <Button
                           variant="outline"
-                          onClick={handleCreatePortalAccount}
+                          onClick={() => onCreatePortalAccount(church.id, church.applicantEmail, church.churchName)}
                           isLoading={isProcessingPortalAccount}
                           className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
                         >
@@ -1533,7 +1770,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       <div className="max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center"><button onClick={onBack} className="mr-4 text-brand-600 hover:text-brand-800"><ArrowLeft /></button><h1 className="text-3xl font-serif font-bold text-brand-900">Admin Dashboard</h1></div>
-          <div className="flex items-center space-x-4"><div className="hidden sm:block text-right"><div className="text-sm font-bold text-gray-900">{user.email}</div><div className="text-xs text-gray-500">Administrator</div></div><Button variant="outline" onClick={logout} className="text-xs px-3 py-2"><LogOut className="w-4 h-4 mr-2" /> Sign Out</Button></div>
+          <div className="flex items-center space-x-4"><div className="hidden sm:block text-right"><div className="text-sm font-bold text-gray-900">{user?.email}</div><div className="text-xs text-gray-500">Administrator</div></div><Button variant="outline" onClick={logout} className="text-xs px-3 py-2"><LogOut className="w-4 h-4 mr-2" /> Sign Out</Button></div>
         </div>
 
         {/* Navigation Menu */}
@@ -1615,6 +1852,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               <div className="flex items-center">
                 <Settings className="w-4 h-4 mr-2" />
                 Settings
+              </div>
+            </button>
+            <button
+              onClick={() => setCurrentView('users')}
+              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                currentView === 'users'
+                  ? 'border-brand-600 text-brand-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              <div className="flex items-center">
+                <UserIcon className="w-4 h-4 mr-2" />
+                Users
               </div>
             </button>
           </nav>
@@ -1751,52 +2001,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   Export CSV
                 </Button>
                 <Button
-                  variant="danger"
-                  onClick={async () => {
-                    const confirmation = confirm(
-                      `⚠️ WARNING: This will permanently delete ALL ${approvedApps.length} approved churches!\n\nThis action CANNOT be undone.\n\nType the number ${approvedApps.length} in the next prompt to confirm.`
-                    );
-                    
-                    if (!confirmation) return;
-                    
-                    const userInput = prompt(`To confirm deletion of ALL ${approvedApps.length} churches, type the number: ${approvedApps.length}`);
-                    
-                    if (userInput !== String(approvedApps.length)) {
-                      alert('Deletion cancelled - confirmation number did not match.');
-                      return;
-                    }
-                    
-                    try {
-                      setIsImporting(true); // Reuse loading state
-                      let deleted = 0;
-                      let failed = 0;
-                      
-                      for (const church of approvedApps) {
-                        try {
-                          await deleteChurchApplication(church.id);
-                          deleted++;
-                          console.log(`Deleted: ${church.churchName}`);
-                        } catch (error) {
-                          console.error(`Failed to delete ${church.churchName}:`, error);
-                          failed++;
-                        }
-                      }
-                      
-                      alert(`Deletion complete!\n\nDeleted: ${deleted} churches\nFailed: ${failed}`);
-                    } catch (error) {
-                      console.error('Error during bulk delete:', error);
-                      alert('An error occurred during deletion. Some churches may not have been deleted.');
-                    } finally {
-                      setIsImporting(false);
-                    }
-                  }}
-                  disabled={approvedApps.length === 0 || isImporting}
-                  className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
-                >
-                  <Trash2 className="w-3 h-3 mr-1" />
-                  Delete All
-                </Button>
-                 <Button
                   variant="outline"
                   onClick={async () => {
                     if (!confirm(`This will attempt to recalculate and update coordinates for all approved churches. This may take several minutes. Are you sure you want to proceed?`)) return;
@@ -1989,200 +2193,396 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               <p className="text-gray-600">Configure automated emails and system behaviors.</p>
             </div>
 
-            {loadingTemplates ? (
-              <div className="flex justify-center p-12"><RefreshCw className="w-8 h-8 animate-spin text-gray-400" /></div>
-            ) : (
-              <div className="space-y-8">
-                {/* Application Received Template */}
-                <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
-                  <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
-                    <h3 className="text-lg font-bold text-gray-900 flex items-center">
-                      <Mail className="w-5 h-5 mr-2 text-gray-500" />
-                      Application Received Email
-                    </h3>
-                    <p className="text-sm text-gray-500 mt-1">Sent automatically when a church submits a new application.</p>
+            {/* Settings Tabs */}
+            <div className="mb-6 border-b border-gray-200">
+              <nav className="flex space-x-8">
+                <button
+                  onClick={() => setSettingsTab('email')}
+                  className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                    settingsTab === 'email'
+                      ? 'border-brand-600 text-brand-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center">
+                    <Mail className="w-4 h-4 mr-2" />
+                    Email Templates
                   </div>
-                  <div className="p-6 space-y-4">
+                </button>
+                <button
+                  onClick={() => setSettingsTab('application')}
+                  className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                    settingsTab === 'application'
+                      ? 'border-brand-600 text-brand-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center">
+                    <BookOpen className="w-4 h-4 mr-2" />
+                    Application Form
+                  </div>
+                </button>
+                <button
+                  onClick={() => setSettingsTab('general')}
+                  className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                    settingsTab === 'general'
+                      ? 'border-brand-600 text-brand-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center">
+                    <Settings className="w-4 h-4 mr-2" />
+                    General
+                  </div>
+                </button>
+              </nav>
+            </div>
+
+            {/* Email Templates Tab */}
+            {settingsTab === 'email' && (
+              <>
+                {loadingTemplates ? (
+                  <div className="flex justify-center p-12"><RefreshCw className="w-8 h-8 animate-spin text-gray-400" /></div>
+                ) : (
+                  <div className="space-y-8">
+                    {/* Application Received Template */}
+                    <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+                      <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
+                        <h3 className="text-lg font-bold text-gray-900 flex items-center">
+                          <Mail className="w-5 h-5 mr-2 text-gray-500" />
+                          Application Received Email
+                        </h3>
+                        <p className="text-sm text-gray-500 mt-1">Sent automatically when a church submits a new application.</p>
+                      </div>
+                      <div className="p-6 space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
+                          <input
+                            type="text"
+                            value={templates.application_received.subject}
+                            onChange={(e) => setTemplates({
+                              ...templates,
+                              application_received: { ...templates.application_received, subject: e.target.value }
+                            })}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
+                          <textarea
+                            value={templates.application_received.body}
+                            onChange={(e) => setTemplates({
+                              ...templates,
+                              application_received: { ...templates.application_received, body: e.target.value }
+                            })}
+                            rows={6}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
+                        </div>
+                        <div className="flex justify-end">
+                          <Button 
+                            onClick={() => handleSaveTemplate('application_received')}
+                            isLoading={savingTemplate === 'application_received'}
+                          >
+                            Save Template
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Application Approved Template */}
+                    <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+                      <div className="bg-green-50 px-6 py-4 border-b border-green-200">
+                        <h3 className="text-lg font-bold text-green-900 flex items-center">
+                          <Check className="w-5 h-5 mr-2 text-green-600" />
+                          Application Approved Email
+                        </h3>
+                        <p className="text-sm text-green-700 mt-1">Sent automatically when you approve an application.</p>
+                      </div>
+                      <div className="p-6 space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
+                          <input
+                            type="text"
+                            value={templates.application_approved.subject}
+                            onChange={(e) => setTemplates({
+                              ...templates,
+                              application_approved: { ...templates.application_approved, subject: e.target.value }
+                            })}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
+                          <textarea
+                            value={templates.application_approved.body}
+                            onChange={(e) => setTemplates({
+                              ...templates,
+                              application_approved: { ...templates.application_approved, body: e.target.value }
+                            })}
+                            rows={6}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
+                        </div>
+                        <div className="flex justify-end">
+                          <Button 
+                            onClick={() => handleSaveTemplate('application_approved')}
+                            isLoading={savingTemplate === 'application_approved'}
+                          >
+                            Save Template
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Application Rejected Template */}
+                    <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+                      <div className="bg-red-50 px-6 py-4 border-b border-red-200">
+                        <h3 className="text-lg font-bold text-red-900 flex items-center">
+                          <X className="w-5 h-5 mr-2 text-red-600" />
+                          Application Rejected Email
+                        </h3>
+                        <p className="text-sm text-red-700 mt-1">Sent automatically when you reject an application.</p>
+                      </div>
+                      <div className="p-6 space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
+                          <input
+                            type="text"
+                            value={templates.application_rejected.subject}
+                            onChange={(e) => setTemplates({
+                              ...templates,
+                              application_rejected: { ...templates.application_rejected, subject: e.target.value }
+                            })}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
+                          <textarea
+                            value={templates.application_rejected.body}
+                            onChange={(e) => setTemplates({
+                              ...templates,
+                              application_rejected: { ...templates.application_rejected, body: e.target.value }
+                            })}
+                            rows={6}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
+                        </div>
+                        <div className="flex justify-end">
+                          <Button 
+                            onClick={() => handleSaveTemplate('application_rejected')}
+                            isLoading={savingTemplate === 'application_rejected'}
+                          >
+                            Save Template
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Dues Reminder Templates */}
+                    {[
+                      { type: 'dues_reminder_30' as const, title: 'Dues Reminder (30 Days)', desc: 'Sent 30 days before annual dues expire.' },
+                      { type: 'dues_reminder_7' as const, title: 'Dues Reminder (7 Days)', desc: 'Sent 7 days before annual dues expire.' },
+                      { type: 'dues_reminder_0' as const, title: 'Dues Reminder (Due Today)', desc: 'Sent on the day annual dues expire.' },
+                      { type: 'dues_delinquent' as const, title: 'Delinquency Notice', desc: 'Sent weekly when dues are overdue.' }
+                    ].map(({ type, title, desc }) => (
+                      <div key={type} className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+                        <div className="bg-yellow-50 px-6 py-4 border-b border-yellow-200">
+                          <h3 className="text-lg font-bold text-yellow-900 flex items-center">
+                            <AlertTriangle className="w-5 h-5 mr-2 text-yellow-600" />
+                            {title}
+                          </h3>
+                          <p className="text-sm text-yellow-700 mt-1">{desc}</p>
+                        </div>
+                        <div className="p-6 space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
+                            <input
+                              type="text"
+                              value={templates[type].subject}
+                              onChange={(e) => setTemplates({
+                                ...templates,
+                                [type]: { ...templates[type], subject: e.target.value }
+                              })}
+                              className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
+                            <textarea
+                              value={templates[type].body}
+                              onChange={(e) => setTemplates({
+                                ...templates,
+                                [type]: { ...templates[type], body: e.target.value }
+                              })}
+                              rows={6}
+                              className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
+                            />
+                            <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
+                          </div>
+                          <div className="flex justify-end">
+                            <Button 
+                              onClick={() => handleSaveTemplate(type)}
+                              isLoading={savingTemplate === type}
+                            >
+                              Save Template
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Application Form Tab */}
+            {settingsTab === 'application' && (
+              <div className="space-y-6">
+                {/* Header */}
+                <div className="bg-white rounded-lg shadow-lg border border-gray-200 p-6">
+                  <div className="flex items-center justify-between">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
-                      <input
-                        type="text"
-                        value={templates.application_received.subject}
-                        onChange={(e) => setTemplates({
-                          ...templates,
-                          application_received: { ...templates.application_received, subject: e.target.value }
-                        })}
-                        className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
-                      />
+                      <h3 className="text-lg font-bold text-gray-900">Application Form Editor</h3>
+                      <p className="text-gray-600 mt-1">Manage form fields, sections, and requirements for church applications.</p>
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
-                      <textarea
-                        value={templates.application_received.body}
-                        onChange={(e) => setTemplates({
-                          ...templates,
-                          application_received: { ...templates.application_received, body: e.target.value }
-                        })}
-                        rows={6}
-                        className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
-                    </div>
-                    <div className="flex justify-end">
-                      <Button 
-                        onClick={() => handleSaveTemplate('application_received')}
-                        isLoading={savingTemplate === 'application_received'}
-                      >
-                        Save Template
-                      </Button>
-                    </div>
+                    <Button onClick={addNewField} variant="primary" className="flex items-center">
+                      <BookOpen className="w-4 h-4 mr-2" />
+                      Add New Field
+                    </Button>
                   </div>
                 </div>
 
-                {/* Application Approved Template */}
-                <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
-                  <div className="bg-green-50 px-6 py-4 border-b border-green-200">
-                    <h3 className="text-lg font-bold text-green-900 flex items-center">
-                      <Check className="w-5 h-5 mr-2 text-green-600" />
-                      Application Approved Email
-                    </h3>
-                    <p className="text-sm text-green-700 mt-1">Sent automatically when you approve an application.</p>
-                  </div>
-                  <div className="p-6 space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
-                      <input
-                        type="text"
-                        value={templates.application_approved.subject}
-                        onChange={(e) => setTemplates({
-                          ...templates,
-                          application_approved: { ...templates.application_approved, subject: e.target.value }
-                        })}
-                        className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
-                      />
+                {/* Form Fields by Section */}
+                {Object.entries(getFieldsBySection()).map(([section, fields]) => (
+                  <div key={section} className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+                    {/* Section Header */}
+                    <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
+                      <h4 className="text-lg font-bold text-gray-900">{section}</h4>
+                      <p className="text-sm text-gray-500 mt-1">{fields.length} field{fields.length !== 1 ? 's' : ''}</p>
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
-                      <textarea
-                        value={templates.application_approved.body}
-                        onChange={(e) => setTemplates({
-                          ...templates,
-                          application_approved: { ...templates.application_approved, body: e.target.value }
-                        })}
-                        rows={6}
-                        className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
-                    </div>
-                    <div className="flex justify-end">
-                      <Button 
-                        onClick={() => handleSaveTemplate('application_approved')}
-                        isLoading={savingTemplate === 'application_approved'}
-                      >
-                        Save Template
-                      </Button>
-                    </div>
-                  </div>
-                </div>
 
-                {/* Application Rejected Template */}
-                <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
-                  <div className="bg-red-50 px-6 py-4 border-b border-red-200">
-                    <h3 className="text-lg font-bold text-red-900 flex items-center">
-                      <X className="w-5 h-5 mr-2 text-red-600" />
-                      Application Rejected Email
-                    </h3>
-                    <p className="text-sm text-red-700 mt-1">Sent automatically when you reject an application.</p>
-                  </div>
-                  <div className="p-6 space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
-                      <input
-                        type="text"
-                        value={templates.application_rejected.subject}
-                        onChange={(e) => setTemplates({
-                          ...templates,
-                          application_rejected: { ...templates.application_rejected, subject: e.target.value }
-                        })}
-                        className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
-                      <textarea
-                        value={templates.application_rejected.body}
-                        onChange={(e) => setTemplates({
-                          ...templates,
-                          application_rejected: { ...templates.application_rejected, body: e.target.value }
-                        })}
-                        rows={6}
-                        className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
-                    </div>
-                    <div className="flex justify-end">
-                      <Button 
-                        onClick={() => handleSaveTemplate('application_rejected')}
-                        isLoading={savingTemplate === 'application_rejected'}
-                      >
-                        Save Template
-                      </Button>
-                    </div>
-                  </div>
-                </div>
+                    {/* Fields List */}
+                    <div className="divide-y divide-gray-200">
+                      {fields.map((field, index) => (
+                        <div key={field.id} className="p-6 hover:bg-gray-50 transition-colors">
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-3">
+                                <h5 className="text-base font-semibold text-gray-900">{field.label}</h5>
+                                {field.required && (
+                                  <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-red-100 text-red-800">
+                                    Required
+                                  </span>
+                                )}
+                                <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-800 capitalize">
+                                  {field.type.replace('_', ' ')}
+                                </span>
+                              </div>
+                              <div className="mt-1 text-sm text-gray-600 space-y-1">
+                                <div><strong>Field Name:</strong> {field.name}</div>
+                                {field.placeholder && <div><strong>Placeholder:</strong> {field.placeholder}</div>}
+                                {field.description && <div><strong>Description:</strong> {field.description}</div>}
+                                {field.options && field.options.length > 0 && (
+                                  <div><strong>Options:</strong> {field.options.join(', ')}</div>
+                                )}
+                                {field.min && <div><strong>Min Value:</strong> {field.min}</div>}
+                                {field.rows && <div><strong>Rows:</strong> {field.rows}</div>}
+                              </div>
+                            </div>
+                            
+                            {/* Field Controls */}
+                            <div className="flex items-center gap-2 ml-4">
+                              {/* Move Up/Down */}
+                              <div className="flex flex-col gap-1">
+                                <button
+                                  onClick={() => moveField(field.id, 'up')}
+                                  disabled={index === 0}
+                                  className="p-1 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title="Move Up"
+                                >
+                                  ↑
+                                </button>
+                                <button
+                                  onClick={() => moveField(field.id, 'down')}
+                                  disabled={index === fields.length - 1}
+                                  className="p-1 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title="Move Down"
+                                >
+                                  ↓
+                                </button>
+                              </div>
 
-                {/* Dues Reminder Templates */}
-                {[
-                  { type: 'dues_reminder_30' as const, title: 'Dues Reminder (30 Days)', desc: 'Sent 30 days before annual dues expire.' },
-                  { type: 'dues_reminder_7' as const, title: 'Dues Reminder (7 Days)', desc: 'Sent 7 days before annual dues expire.' },
-                  { type: 'dues_reminder_0' as const, title: 'Dues Reminder (Due Today)', desc: 'Sent on the day annual dues expire.' },
-                  { type: 'dues_delinquent' as const, title: 'Delinquency Notice', desc: 'Sent weekly when dues are overdue.' }
-                ].map(({ type, title, desc }) => (
-                  <div key={type} className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
-                    <div className="bg-yellow-50 px-6 py-4 border-b border-yellow-200">
-                      <h3 className="text-lg font-bold text-yellow-900 flex items-center">
-                        <AlertTriangle className="w-5 h-5 mr-2 text-yellow-600" />
-                        {title}
-                      </h3>
-                      <p className="text-sm text-yellow-700 mt-1">{desc}</p>
-                    </div>
-                    <div className="p-6 space-y-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
-                        <input
-                          type="text"
-                          value={templates[type].subject}
-                          onChange={(e) => setTemplates({
-                            ...templates,
-                            [type]: { ...templates[type], subject: e.target.value }
-                          })}
-                          className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
-                        <textarea
-                          value={templates[type].body}
-                          onChange={(e) => setTemplates({
-                            ...templates,
-                            [type]: { ...templates[type], body: e.target.value }
-                          })}
-                          rows={6}
-                          className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
-                        />
-                        <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
-                      </div>
-                      <div className="flex justify-end">
-                        <Button 
-                          onClick={() => handleSaveTemplate(type)}
-                          isLoading={savingTemplate === type}
-                        >
-                          Save Template
-                        </Button>
-                      </div>
+                              {/* Action Buttons */}
+                              <Button
+                                onClick={() => duplicateField(field)}
+                                variant="outline"
+                                className="px-3 py-1.5 h-8 text-xs"
+                                title="Duplicate Field"
+                              >
+                                Copy
+                              </Button>
+                              <Button
+                                onClick={() => {setEditingField(field); setIsAddingField(false);}}
+                                variant="primary"
+                                className="px-3 py-1.5 h-8 text-xs"
+                              >
+                                <Edit className="w-3 h-3 mr-1" />
+                                Edit
+                              </Button>
+                              <Button
+                                onClick={() => deleteField(field.id)}
+                                variant="danger"
+                                className="px-3 py-1.5 h-8 text-xs"
+                              >
+                                <Trash2 className="w-3 h-3 mr-1" />
+                                Delete
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 ))}
+
+                {/* Form Statistics */}
+                <div className="bg-white rounded-lg shadow border border-gray-200 p-6">
+                  <h4 className="text-lg font-bold text-gray-900 mb-4">Form Statistics</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-6">
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-blue-600">{formFields.length}</div>
+                      <div className="text-sm text-gray-600">Total Fields</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-red-600">{formFields.filter(f => f.required).length}</div>
+                      <div className="text-sm text-gray-600">Required Fields</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-green-600">{Object.keys(getFieldsBySection()).length}</div>
+                      <div className="text-sm text-gray-600">Sections</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-purple-600">{formFields.filter(f => f.type === 'select' || f.type === 'radio').length}</div>
+                      <div className="text-sm text-gray-600">Choice Fields</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* General Settings Tab */}
+            {settingsTab === 'general' && (
+              <div className="bg-white rounded-lg shadow-lg border border-gray-200 p-6">
+                <h3 className="text-lg font-bold text-gray-900 mb-4">General Settings</h3>
+                <p className="text-gray-600">Configure system-wide settings and preferences.</p>
+                <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+                  <p className="text-sm text-gray-500 italic">General settings coming soon...</p>
+                </div>
               </div>
             )}
           </section>
@@ -2443,6 +2843,85 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
             )}
           </div>
         )}
+
+        {/* Users View */}
+        {currentView === 'users' && (
+          <section>
+            <div className="flex items-start justify-between mb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">User Management</h2>
+                <p className="text-gray-600">Manage admin users and their permissions.</p>
+              </div>
+              <Button onClick={() => { setNewAdminEmail(''); setNewAdminPassword(''); setAddingAdmin(true); }} variant="primary" className="flex items-center">
+                <PlusCircle className="w-4 h-4 mr-2" />
+                Add New Admin
+              </Button>
+            </div>
+
+            {loadingUsers ? (
+              <div className="flex justify-center p-12"><RefreshCw className="w-8 h-8 animate-spin text-gray-400" /></div>
+            ) : (
+              <div className="bg-white rounded-lg shadow overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Sign-in</th>
+                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {allUsers.map((u) => (
+                        <tr key={u.uid} className="hover:bg-gray-50">
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="font-medium text-gray-900">{u.email}</div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                              u.role === 'admin' ? 'bg-green-100 text-green-800' :
+                              u.role === 'church_user' ? 'bg-blue-100 text-blue-800' :
+                              'bg-gray-100 text-gray-800'
+                            }`}>
+                              {u.role.replace('_', ' ')}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {u.lastSignInTime ? new Date(u.lastSignInTime).toLocaleString() : 'N/A'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                            {u.role === 'admin' && u.uid !== user?.uid ? (
+                              <Button
+                                variant="danger"
+                                onClick={() => handleRemoveAdminRole(u.uid, u.email)}
+                                isLoading={userActionLoading === u.uid}
+                                className="px-3 py-1.5 h-8 text-xs"
+                              >
+                                Demote Admin
+                              </Button>
+                            ) : u.role !== 'admin' ? (
+                              <Button
+                                variant="primary"
+                                onClick={() => handleSetAdminRole(u.uid, u.email)}
+                                isLoading={userActionLoading === u.uid}
+                                className="px-3 py-1.5 h-8 text-xs"
+                              >
+                                Make Admin
+                              </Button>
+                            ) : (
+                              <span className="text-gray-400 text-xs px-3 py-1.5">Current User</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
       </div>
 
       {/* Church Detail Modal */}
@@ -2453,6 +2932,351 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           onCreatePortalAccount={handleCreatePortalAccount}
           isProcessingPortalAccount={isProcessingPortalAccount}
         />
+      )}
+
+      {/* Form Field Editor Modal */}
+      {editingField && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={() => setEditingField(null)}>
+          <div className="flex items-center justify-center min-h-screen px-4 py-6">
+            <div 
+              className="bg-white rounded-lg shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="bg-black px-6 py-4 flex items-center justify-between">
+                <h3 className="text-xl font-serif font-bold text-white">
+                  {isAddingField ? 'Add New Field' : 'Edit Field'}
+                </h3>
+                <button onClick={() => setEditingField(null)} className="text-gray-300 hover:text-white">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              {/* Content */}
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                if (editingField.label && editingField.name) {
+                  saveField(editingField);
+                }
+              }} className="p-6 space-y-6">
+                
+                {/* Basic Info */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Field Label *</label>
+                    <input
+                      type="text"
+                      value={editingField.label}
+                      onChange={(e) => setEditingField({...editingField, label: e.target.value})}
+                      required
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      placeholder="Enter field label"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Field Name *</label>
+                    <input
+                      type="text"
+                      value={editingField.name}
+                      onChange={(e) => setEditingField({...editingField, name: e.target.value})}
+                      required
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      placeholder="Enter field name (e.g., churchName)"
+                    />
+                  </div>
+                </div>
+
+                {/* Field Type and Section */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Field Type</label>
+                    <select
+                      value={editingField.type}
+                      onChange={(e) => setEditingField({...editingField, type: e.target.value as FormFieldType})}
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    >
+                      <option value="text">Text</option>
+                      <option value="email">Email</option>
+                      <option value="tel">Phone</option>
+                      <option value="url">URL</option>
+                      <option value="number">Number</option>
+                      <option value="password">Password</option>
+                      <option value="textarea">Textarea</option>
+                      <option value="select">Select Dropdown</option>
+                      <option value="radio">Radio Buttons</option>
+                      <option value="checkbox">Checkbox</option>
+                      <option value="dynamic_array">Dynamic Array</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Section</label>
+                    <select
+                      value={editingField.section}
+                      onChange={(e) => setEditingField({...editingField, section: e.target.value})}
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    >
+                      <option value="Account Setup">Account Setup</option>
+                      <option value="Church Information">Church Information</option>
+                      <option value="Leadership">Leadership</option>
+                      <option value="Doctrine & Practice">Doctrine & Practice</option>
+                      <option value="Network Dues">Network Dues</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Required and Order */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="required"
+                      checked={editingField.required}
+                      onChange={(e) => setEditingField({...editingField, required: e.target.checked})}
+                      className="h-4 w-4 text-black focus:ring-black border-gray-300 rounded"
+                    />
+                    <label htmlFor="required" className="ml-2 text-sm font-medium text-gray-700">
+                      Required Field
+                    </label>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Display Order</label>
+                    <input
+                      type="number"
+                      value={editingField.order}
+                      onChange={(e) => setEditingField({...editingField, order: parseInt(e.target.value) || 0})}
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                </div>
+
+                {/* Placeholder and Description */}
+                <div className="grid grid-cols-1 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Placeholder Text</label>
+                    <input
+                      type="text"
+                      value={editingField.placeholder || ''}
+                      onChange={(e) => setEditingField({...editingField, placeholder: e.target.value})}
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      placeholder="Enter placeholder text"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Help Text</label>
+                    <input
+                      type="text"
+                      value={editingField.description || ''}
+                      onChange={(e) => setEditingField({...editingField, description: e.target.value})}
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      placeholder="Enter help text"
+                    />
+                  </div>
+                </div>
+
+                {/* Type-specific options */}
+                {(editingField.type === 'select' || editingField.type === 'radio') && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Options (one per line)</label>
+                    <textarea
+                      value={(editingField.options || []).join('\n')}
+                      onChange={(e) => setEditingField({...editingField, options: e.target.value.split('\n').filter(o => o.trim())})}
+                      rows={4}
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      placeholder="Option 1&#10;Option 2&#10;Option 3"
+                    />
+                  </div>
+                )}
+
+                {editingField.type === 'number' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Minimum Value</label>
+                    <input
+                      type="number"
+                      value={editingField.min || ''}
+                      onChange={(e) => setEditingField({...editingField, min: parseInt(e.target.value) || undefined})}
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                )}
+
+                {editingField.type === 'textarea' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Number of Rows</label>
+                    <input
+                      type="number"
+                      value={editingField.rows || 3}
+                      onChange={(e) => setEditingField({...editingField, rows: parseInt(e.target.value) || 3})}
+                      min="1"
+                      max="20"
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                )}
+
+                {/* Preview */}
+                <div className="border-t pt-6">
+                  <h4 className="text-lg font-semibold text-gray-900 mb-3">Field Preview</h4>
+                  <div className="bg-gray-50 p-4 rounded-lg">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      {editingField.label}
+                      {editingField.required && <span className="text-red-500 ml-1">*</span>}
+                    </label>
+                    
+                    {editingField.type === 'text' && (
+                      <input
+                        type="text"
+                        placeholder={editingField.placeholder}
+                        disabled
+                        className="w-full rounded-md border-gray-300 shadow-sm border p-2 bg-white opacity-60"
+                      />
+                    )}
+                    {editingField.type === 'email' && (
+                      <input
+                        type="email"
+                        placeholder={editingField.placeholder}
+                        disabled
+                        className="w-full rounded-md border-gray-300 shadow-sm border p-2 bg-white opacity-60"
+                      />
+                    )}
+                    {editingField.type === 'tel' && (
+                      <input
+                        type="tel"
+                        placeholder={editingField.placeholder}
+                        disabled
+                        className="w-full rounded-md border-gray-300 shadow-sm border p-2 bg-white opacity-60"
+                      />
+                    )}
+                    {editingField.type === 'url' && (
+                      <input
+                        type="url"
+                        placeholder={editingField.placeholder}
+                        disabled
+                        className="w-full rounded-md border-gray-300 shadow-sm border p-2 bg-white opacity-60"
+                      />
+                    )}
+                    {editingField.type === 'number' && (
+                      <input
+                        type="number"
+                        placeholder={editingField.placeholder}
+                        min={editingField.min}
+                        disabled
+                        className="w-full rounded-md border-gray-300 shadow-sm border p-2 bg-white opacity-60"
+                      />
+                    )}
+                    {editingField.type === 'password' && (
+                      <input
+                        type="password"
+                        placeholder={editingField.placeholder}
+                        disabled
+                        className="w-full rounded-md border-gray-300 shadow-sm border p-2 bg-white opacity-60"
+                      />
+                    )}
+                    {editingField.type === 'textarea' && (
+                      <textarea
+                        placeholder={editingField.placeholder}
+                        rows={editingField.rows || 3}
+                        disabled
+                        className="w-full rounded-md border-gray-300 shadow-sm border p-2 bg-white opacity-60"
+                      />
+                    )}
+                    {editingField.type === 'select' && (
+                      <select disabled className="w-full rounded-md border-gray-300 shadow-sm border p-2 bg-white opacity-60">
+                        <option>Select an option...</option>
+                        {editingField.options?.map((option, idx) => (
+                          <option key={idx} value={option}>{option}</option>
+                        ))}
+                      </select>
+                    )}
+                    {editingField.type === 'radio' && (
+                      <div className="space-y-2">
+                        {editingField.options?.map((option, idx) => (
+                          <label key={idx} className="flex items-center">
+                            <input type="radio" disabled className="mr-2 opacity-60" />
+                            <span className="opacity-60">{option}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                    {editingField.type === 'checkbox' && (
+                      <label className="flex items-center">
+                        <input type="checkbox" disabled className="mr-2 opacity-60" />
+                        <span className="opacity-60">{editingField.label}</span>
+                      </label>
+                    )}
+                    {editingField.type === 'dynamic_array' && (
+                      <div className="text-gray-500 italic">Dynamic array field (custom implementation required)</div>
+                    )}
+                    
+                    {editingField.description && (
+                      <p className="text-xs text-gray-500 mt-1">{editingField.description}</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Footer */}
+                <div className="flex justify-end gap-2 pt-6 border-t">
+                  <Button type="button" variant="outline" onClick={() => setEditingField(null)}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" variant="primary">
+                    {isAddingField ? 'Add Field' : 'Save Changes'}
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add New Admin Modal */}
+      {addingAdmin && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={() => setAddingAdmin(false)}>
+          <div className="flex items-center justify-center min-h-screen px-4 py-6">
+            <div 
+              className="bg-white rounded-lg shadow-2xl max-w-md w-full"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="bg-black px-6 py-4 flex items-center justify-between">
+                <h3 className="text-xl font-serif font-bold text-white">Add New Admin</h3>
+                <button onClick={() => setAddingAdmin(false)} className="text-gray-300 hover:text-white">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              <form onSubmit={handleAddAdmin} className="p-6 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Email Address</label>
+                  <input
+                    type="email"
+                    value={newAdminEmail}
+                    onChange={(e) => setNewAdminEmail(e.target.value)}
+                    required
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    placeholder="admin@example.com"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Password</label>
+                  <input
+                    type="password"
+                    value={newAdminPassword}
+                    onChange={(e) => setNewAdminPassword(e.target.value)}
+                    required
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    placeholder="••••••••"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-4 border-t">
+                  <Button type="button" variant="outline" onClick={() => setAddingAdmin(false)}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" variant="primary" isLoading={addingAdmin}>
+                    Create Admin
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

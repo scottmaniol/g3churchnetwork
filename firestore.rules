@@ -5,7 +5,7 @@ service cloud.firestore {
     
     // Helper function to check if user is admin
     function isAdmin() {
-      return request.auth != null && request.auth.token.email != null;
+      return request.auth != null && request.auth.token.admin == true;
     }
     
     // Helper function to check if user owns the church profile
@@ -49,6 +49,15 @@ service cloud.firestore {
     match /settings/{documentId} {
       // Allow read/write access for admin users
       allow read, write: if isAdmin();
+    }
+
+    // User Profiles collection rules
+    match /userProfiles/{userId} {
+      // Allow admins to READ and UPDATE any user profile
+      allow read, write: if isAdmin();
+
+      // Allow authenticated users to READ and UPDATE their OWN user profile
+      allow read, update: if request.auth != null && request.auth.uid == userId;
     }
   }
 }

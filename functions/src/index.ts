@@ -27,6 +27,11 @@ const chunkArray = (arr: any[], size: number) => {
   return chunks;
 };
 
+// Helper function to check if user is admin based on custom claim
+function isAdmin(context: any): boolean {
+  return context.auth != null && context.auth.token.admin === true;
+}
+
 const SYSTEM_SENDER = "G3 Church Network <admin@g3min.org>";
 
 // ------------------------------------------------------------------
@@ -223,8 +228,6 @@ export const createStripeSetupIntent = onCall({ cors: true }, async (request) =>
 
 import { getAuth } from 'firebase-admin/auth';
 
-// ... (other code)
-
 export const createChurchUserAndSendResetEmail = onCall({ cors: true }, async (request) => {
   if (!request.auth) {
     throw new HttpsError("unauthenticated", "Must be authenticated.");
@@ -286,8 +289,7 @@ export const createChurchUserAndSendResetEmail = onCall({ cors: true }, async (r
 
     await sendEmailBatch([applicantEmail], subject, body, SYSTEM_SENDER);
     console.log(`Sent 'portal_account_setup' email to ${applicantEmail}`);
-
-    return { success: true, message: "Portal account created and password reset email sent." };
+    return { success: true, message: "Portal account created and password reset email sent.", uid: firebaseUser.uid }; // Return UID on success
 
   } catch (error: any) {
     console.error("Error in createChurchUserAndSendResetEmail:", error);
@@ -630,7 +632,7 @@ export const onApplicationCreatedV2 = onDocumentCreated({
     await Promise.all(promises);
   });
 
-// TRIGGER: On Application Updated (Status Change)
+// TRIGGER: On Application Updated (Status Change and Address Updates)
 export const onApplicationStatusUpdatedV2 = onDocumentUpdated({
     document: "applications/{id}",
     database: DATABASE_ID
@@ -640,34 +642,202 @@ export const onApplicationStatusUpdatedV2 = onDocumentUpdated({
 
     const newData = change.after.data();
     const oldData = change.before.data();
+    const applicationId = event.params.id;
 
     if (!newData || !oldData) return;
 
-    // Only send if status changed
-    if (newData.status === oldData.status) return;
-
-    try {
-      let type = '';
-      if (newData.status === 'APPROVED') {
-        type = 'application_approved';
-      } else if (newData.status === 'REJECTED') {
-        type = 'application_rejected';
-      }
-
-      if (type) {
-        const template = await getTemplate(type);
-        const subject = replaceVariables(template.subject, newData);
-        const body = replaceVariables(template.body, newData);
-
-        if (newData.applicantEmail) {
-           await sendEmailBatch([newData.applicantEmail], subject, body, SYSTEM_SENDER);
-           console.log(`Sent '${type}' email to ${newData.applicantEmail}`);
+    // Handle status change emails
+    if (newData.status !== oldData.status) {
+      try {
+        let type = '';
+        if (newData.status === 'APPROVED') {
+          type = 'application_approved';
+        } else if (newData.status === 'REJECTED') {
+          type = 'application_rejected';
         }
+
+        if (type) {
+          const template = await getTemplate(type);
+          const subject = replaceVariables(template.subject, newData);
+          const body = replaceVariables(template.body, newData);
+
+          if (newData.applicantEmail) {
+             await sendEmailBatch([newData.applicantEmail], subject, body, SYSTEM_SENDER);
+             console.log(`Sent '${type}' email to ${newData.applicantEmail}`);
+          }
+        }
+      } catch (error) {
+         console.error("Error in onApplicationStatusUpdated:", error);
       }
-    } catch (error) {
-       console.error("Error in onApplicationStatusUpdated:", error);
+    }
+
+    // Handle address changes and trigger coordinate recalculation
+    const hasAddressChanged = () => {
+      const oldAddr = oldData.churchAddress;
+      const newAddr = newData.churchAddress;
+      
+      if (!oldAddr && !newAddr) return false;
+      if (!oldAddr || !newAddr) return true;
+      
+      return (
+        oldAddr.street !== newAddr.street ||
+        oldAddr.aptUnit !== newAddr.aptUnit ||
+        oldAddr.city !== newAddr.city ||
+        oldAddr.state !== newAddr.state ||
+        oldAddr.postalCode !== newAddr.postalCode ||
+        oldAddr.country !== newAddr.country
+      );
+    };
+
+    if (hasAddressChanged() && newData.churchAddress) {
+      try {
+        console.log(`Address changed for ${newData.churchName || 'church'} [${applicationId}], triggering coordinate recalculation...`);
+        
+        const addr = newData.churchAddress;
+        const addressString = `${addr.street || ''}, ${addr.city || ''}, ${addr.state || ''} ${addr.postalCode || ''}, ${addr.country || ''}`.replace(/,\s*,/g, ',').trim();
+        
+        // Skip geocoding if address is incomplete
+        if (!addr.city || !addr.country) {
+          console.log(`Incomplete address for ${newData.churchName || 'church'} [${applicationId}], skipping geocoding`);
+          return;
+        }
+
+        console.log(`Geocoding updated address for ${newData.churchName || 'church'}: ${addressString}`);
+
+        const response = await axios.get(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(addressString)}.json`, {
+          params: {
+            access_token: process.env.MAPBOX_ACCESS_TOKEN,
+            limit: 1
+          }
+        });
+
+        if (response.data.features && response.data.features.length > 0) {
+          const [lng, lat] = response.data.features[0].center;
+          const coordinates = { lat, lng };
+          
+          // Update coordinates in background
+          await db.collection('applications').doc(applicationId).update({ coordinates });
+          console.log(`Successfully updated coordinates for ${newData.churchName || 'church'} [${applicationId}]:`, coordinates);
+        } else {
+          console.warn(`Geocoding failed for updated address of ${newData.churchName || 'church'} [${applicationId}]: No features found`);
+          // Optionally clear coordinates if geocoding fails
+          await db.collection('applications').doc(applicationId).update({ coordinates: null });
+        }
+      } catch (error) {
+        console.error(`Error geocoding updated address for ${newData.churchName || 'church'} [${applicationId}]:`, error);
+        // Don't throw error to avoid breaking other operations
+      }
     }
   });
+
+// Admin User Management Functions
+
+export const getAllUsers = onCall({ cors: true }, async (request) => {
+  if (!isAdmin(request)) {
+    throw new HttpsError("permission-denied", "Only administrators can list all users.");
+  }
+
+  try {
+    const listUsersResult = await getAuth(admin.app()).listUsers(1000); // List up to 1000 users
+    const users = listUsersResult.users.map(userRecord => {
+      const customClaims = (userRecord.customClaims || {});
+      return {
+        uid: userRecord.uid,
+        email: userRecord.email,
+        displayName: userRecord.displayName,
+        disabled: userRecord.disabled,
+        creationTime: userRecord.metadata.creationTime,
+        lastSignInTime: userRecord.metadata.lastSignInTime,
+        // The 'role' property will be augmented on the client side from Firestore profile
+        // For now, customClaims can indicate admin status
+        admin: customClaims.admin || false, 
+        churchId: customClaims.churchId || undefined
+      };
+    });
+    return users;
+  } catch (error: any) {
+    console.error("Error listing users:", error);
+    throw new HttpsError("internal", "Failed to list users: " + error.message);
+  }
+});
+
+export const setAdminClaim = onCall({ cors: true }, async (request) => {
+  if (!isAdmin(request)) {
+    throw new HttpsError("permission-denied", "Only administrators can set admin claims.");
+  }
+
+  const { uid, role } = request.data;
+
+  if (!uid || role !== 'admin') {
+    throw new HttpsError("invalid-argument", "UID and role 'admin' are required.");
+  }
+
+  try {
+    await getAuth(admin.app()).setCustomUserClaims(uid, { admin: true });
+    // Also ensure the Firestore user profile is updated
+    await db.collection('userProfiles').doc(uid).update({ role: 'admin' });
+    console.log(`Custom claim 'admin' set for user ${uid}.`);
+    return { success: true };
+  } catch (error: any) {
+    console.error("Error setting custom admin claim:", error);
+    throw new HttpsError("internal", "Failed to set admin claim: " + error.message);
+  }
+});
+
+export const removeAdminClaim = onCall({ cors: true }, async (request) => {
+  if (!isAdmin(request)) {
+    throw new HttpsError("permission-denied", "Only administrators can remove admin claims.");
+  }
+
+  const { uid } = request.data;
+
+  if (!uid) {
+    throw new HttpsError("invalid-argument", "UID is required.");
+  }
+
+  try {
+    await getAuth(admin.app()).setCustomUserClaims(uid, { admin: false });
+    // Also ensure the Firestore user profile is updated
+    await db.collection('userProfiles').doc(uid).update({ role: 'guest' });
+    console.log(`Custom claim 'admin' removed for user ${uid}.`);
+    return { success: true };
+  } catch (error: any) {
+    console.error("Error removing custom admin claim:", error);
+    throw new HttpsError("internal", "Failed to remove admin claim: " + error.message);
+  }
+});
+
+export const createAdminUser = onCall({ cors: true }, async (request) => {
+  if (!isAdmin(request)) {
+    throw new HttpsError("permission-denied", "Only administrators can create other admin users.");
+  }
+
+  const { email, password } = request.data;
+
+  if (!email || !password) {
+    throw new HttpsError("invalid-argument", "Email and password are required.");
+  }
+
+  try {
+    const userRecord = await getAuth(admin.app()).createUser({
+      email,
+      password,
+      emailVerified: true,
+      disabled: false,
+    });
+
+    await getAuth(admin.app()).setCustomUserClaims(userRecord.uid, { admin: true });
+    // A Firestore userProfile will be created on the client side in services/firebase.ts
+    console.log(`New admin user created with UID: ${userRecord.uid}`);
+    return userRecord.uid;
+  } catch (error: any) {
+    console.error("Error creating admin user:", error);
+    if (error.code === 'auth/email-already-exists') {
+      throw new HttpsError("already-exists", "The email address is already in use by another user.");
+    }
+    throw new HttpsError("internal", "Failed to create admin user: " + error.message);
+  }
+});
 
 export const backfillGeocodes = onCall({ cors: true, timeoutSeconds: 300 }, async (request) => {
   if (!request.auth) {

@@ -117,3 +117,19 @@ export interface EmailTemplate {
   body: string;
   type: EmailType;
 }
+
+// User Profile for Firebase Auth Users (Admins and Church Users)
+export interface UserProfile {
+  uid: string;
+  email: string;
+  displayName?: string;
+  role: 'admin' | 'church_user' | 'guest'; // Define roles
+  churchId?: string; // If role is 'church_user', link to church application
+}
+
+// Admin User for display in Admin Dashboard (extended from UserProfile)
+export interface AdminUser extends UserProfile {
+  creationTime?: string;
+  lastSignInTime?: string;
+  disabled: boolean;
+}

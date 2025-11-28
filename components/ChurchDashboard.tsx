@@ -443,7 +443,7 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
                       </Button>
                     </div>
                     <p className="text-xs text-gray-500 mt-2 text-right">
-                      Contact support@g3min.org for billing inquiries.
+                      Contact admin@g3min.org for billing inquiries.
                     </p>
                   </div>
                 </div>

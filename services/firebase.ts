@@ -35,7 +35,7 @@ import {
   httpsCallable,
   Functions
 } from 'firebase/functions';
-import { ChurchApplication, ApplicationStatus, EmailTemplate, EmailType } from '../types';
+import { ChurchApplication, ApplicationStatus, EmailTemplate, EmailType, UserProfile, AdminUser } from '../types';
 
 // ------------------------------------------------------------------
 // FIREBASE CONFIGURATION
@@ -78,10 +78,17 @@ const storage: FirebaseStorage = getStorage(app);
 const functions: Functions = getFunctions(app);
 
 const APPS_COLLECTION = 'applications';
+const USER_PROFILES_COLLECTION = 'userProfiles'; // New collection for user profiles
 
 export { db, auth, storage, functions };
 export type { User };
 export { onAuthStateChanged };
+
+// Cloud Function callables for admin user management
+const _getAllUsersCallable = httpsCallable(functions, 'getAllUsers');
+const _setAdminClaimCallable = httpsCallable(functions, 'setAdminClaim');
+const _removeAdminClaimCallable = httpsCallable(functions, 'removeAdminClaim');
+const _createAdminCallable = httpsCallable(functions, 'createAdminUser');
 
 // ------------------------------------------------------------------
 // HELPERS
@@ -114,6 +121,56 @@ export const submitApplication = async (application: Omit<ChurchApplication, 'id
     console.error("❌ Error adding document:", error);
     console.error("Error code:", error.code);
     console.error("Error message:", error.message);
+    throw error;
+  }
+};
+
+/**
+ * Get a user profile by UID from Firestore.
+ */
+export const getUserProfile = async (uid: string): Promise<UserProfile | null> => {
+  try {
+    const docRef = doc(db, USER_PROFILES_COLLECTION, uid);
+    const snapshot = await getDoc(docRef);
+    if (snapshot.exists()) {
+      return snapshot.data() as UserProfile;
+    }
+    return null;
+  } catch (error) {
+    console.error("Error getting user profile:", error);
+    throw error;
+  }
+};
+
+/**
+ * Update a user's role in their Firestore profile.
+ */
+export const updateUserProfileRole = async (uid: string, role: UserProfile['role']) => {
+  try {
+    const docRef = doc(db, USER_PROFILES_COLLECTION, uid);
+    await updateDoc(docRef, { role });
+  } catch (error) {
+    console.error("Error updating user profile role:", error);
+    throw error;
+  }
+};
+
+/**
+ * Create a user profile in Firestore.
+ */
+export const createUserProfile = async (uid: string, email: string, role: UserProfile['role'], displayName?: string, churchId?: string) => {
+  try {
+    const docRef = doc(db, USER_PROFILES_COLLECTION, uid);
+    const userProfile: UserProfile = {
+      uid,
+      email,
+      role,
+      ...(displayName && { displayName }),
+      ...(churchId && { churchId })
+    };
+    await setDoc(docRef, userProfile);
+  } catch (error) {
+    console.error("Error creating user profile:", error);
     throw error;
   }
 };
@@ -366,9 +423,73 @@ export const createChurchUserAndSendResetEmailClient = async (churchId: string, 
   try {
     const fn = httpsCallable(functions, 'createChurchUserAndSendResetEmail');
     const result = await fn({ churchId, applicantEmail });
+    // After creating the Auth user via Cloud Function, also create a Firestore profile
+    await createUserProfile(result.data as string, applicantEmail, 'church_user', undefined, churchId);
     return result.data;
   } catch (error) {
     console.error("Error calling createChurchUserAndSendResetEmail function:", error);
+    throw error;
+  }
+};
+
+/**
+ * ADMIN FUNCTIONS (CALLING CLOUD FUNCTIONS)
+ */
+
+/**
+ * Get all users with their custom claims and Firestore profile data.
+ * Requires admin privileges on the backend.
+ */
+export const getAllUsers = async (): Promise<AdminUser[]> => {
+  try {
+    const result = await _getAllUsersCallable();
+    return result.data as AdminUser[];
+  } catch (error) {
+    console.error("Error fetching all users:", error);
+    throw error;
+  }
+};
+
+/**
+ * Set a user's role to 'admin' by setting a custom claim.
+ * Requires admin privileges on the backend.
+ */
+export const setAdminRole = async (uid: string) => {
+  try {
+    const result = await _setAdminClaimCallable({ uid, role: 'admin' });
+    return result.data;
+  } catch (error) {
+    console.error("Error setting admin role:", error);
+    throw error;
+  }
+};
+
+/**
+ * Remove a user's 'admin' role by clearing the custom claim.
+ * Requires admin privileges on the backend.
+ */
+export const removeAdminRole = async (uid: string) => {
+  try {
+    const result = await _removeAdminClaimCallable({ uid });
+    return result.data;
+  } catch (error) {
+    console.error("Error removing admin role:", error);
+    throw error;
+  }
+};
+
+/**
+ * Create a new admin user account.
+ * Requires admin privileges on the backend.
+ */
+export const createAdminUser = async (email: string, password: string): Promise<string> => {
+  try {
+    const result = await _createAdminCallable({ email, password });
+    const uid = result.data as string;
+    await createUserProfile(uid, email, 'admin'); // Also create Firestore profile for the new admin
+    return uid;
+  } catch (error) {
+    console.error("Error creating admin user:", error);
     throw error;
   }
 };

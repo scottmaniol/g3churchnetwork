@@ -165,24 +165,24 @@ const App: React.FC = () => {
   const renderHeader = () => (
     <nav className="bg-white text-gray-900 shadow-md sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between h-20 items-center">
-          <div className="flex items-center cursor-pointer" onClick={() => navigateTo(AppView.HOME)}>
+        <div className="flex justify-between h-[106px] items-center">
+          <a href="https://g3min.org" target="_blank" rel="noopener noreferrer" className="flex items-center cursor-pointer">
              <img 
               src="https://firebasestorage.googleapis.com/v0/b/g3-church-network.firebasestorage.app/o/images%2Fg3_logo.png?alt=media" 
               alt="G3 Church Network" 
-              className="h-12 w-auto object-contain" 
+              className="w-[300px] h-[86px] object-contain" 
             />
-          </div>
+          </a>
           
           {/* Desktop Nav */}
           <div className="hidden md:flex space-x-8 items-center">
-            <button onClick={() => navigateTo(AppView.MAP)} className="text-gray-700 hover:text-gray-900 font-medium transition flex items-center gap-2">
+            <button onClick={() => navigateTo(AppView.MAP)} className="text-gray-600 hover:text-gray-900 font-medium transition flex items-center gap-2 text-[14px] uppercase tracking-wider">
               <Map className="w-4 h-4" /> Network Map
             </button>
-            <button onClick={() => navigateTo(AppView.CHURCH_LOGIN)} className="text-gray-700 hover:text-gray-900 font-medium transition flex items-center gap-2">
+            <button onClick={() => navigateTo(AppView.CHURCH_LOGIN)} className="text-gray-600 hover:text-gray-900 font-medium transition flex items-center gap-2 text-[14px] uppercase tracking-wider">
               <Church className="w-4 h-4" /> Church Portal
             </button>
-            <MainButton variant="primary" onClick={() => navigateTo(AppView.APPLY)} className="py-2 px-4 text-sm">
+            <MainButton variant="primary" onClick={() => navigateTo(AppView.APPLY)} className="py-2 px-4 text-[14px] uppercase tracking-wider">
               Apply Now
             </MainButton>
           </div>
@@ -199,9 +199,9 @@ const App: React.FC = () => {
       {/* Mobile Nav */}
       {mobileMenuOpen && (
         <div className="md:hidden bg-white border-t px-2 pt-2 pb-3 space-y-1 sm:px-3 shadow-lg">
-          <button onClick={() => navigateTo(AppView.MAP)} className="block px-3 py-2 rounded-md text-base font-medium hover:bg-gray-50 text-gray-800 w-full text-left">Network Map</button>
-          <button onClick={() => navigateTo(AppView.CHURCH_LOGIN)} className="block px-3 py-2 rounded-md text-base font-medium hover:bg-gray-50 text-gray-800 w-full text-left">Church Portal</button>
-          <button onClick={() => navigateTo(AppView.APPLY)} className="block px-3 py-2 rounded-md text-base font-medium bg-gray-50 text-gray-900 w-full text-left mt-4">Apply Now</button>
+          <button onClick={() => navigateTo(AppView.MAP)} className="block px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-50 text-gray-600 w-full text-left uppercase tracking-wider">Network Map</button>
+          <button onClick={() => navigateTo(AppView.CHURCH_LOGIN)} className="block px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-50 text-gray-600 w-full text-left uppercase tracking-wider">Church Portal</button>
+          <button onClick={() => navigateTo(AppView.APPLY)} className="block px-3 py-2 rounded-md text-sm font-medium bg-gray-50 text-gray-900 w-full text-left mt-4 uppercase tracking-wider">Apply Now</button>
         </div>
       )}
     </nav>
@@ -292,6 +292,60 @@ const App: React.FC = () => {
                 </dt>
                 <dd className="mt-2 ml-16 text-base text-gray-500">
                   Discounts on resources, conferences, and pastoral support to strengthen local churches.
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+      </div>
+
+      {/* Requirements Section */}
+      <div className="py-16 bg-gray-50">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="lg:text-center">
+            <h2 className="text-base text-gray-600 font-semibold tracking-wide uppercase">Membership</h2>
+            <p className="mt-2 text-3xl leading-8 font-extrabold tracking-tight text-gray-900 sm:text-4xl font-serif">
+              Network Requirements
+            </p>
+          </div>
+
+          <div className="mt-10">
+            <dl className="space-y-10 md:space-y-0 md:grid md:grid-cols-3 md:gap-x-8 md:gap-y-10">
+              <div className="relative">
+                <dt>
+                  <div className="absolute flex items-center justify-center h-12 w-12 rounded-md bg-black text-white">
+                    <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                    </svg>
+                  </div>
+                  <p className="ml-16 text-lg leading-6 font-medium text-gray-900">1689 Confession</p>
+                </dt>
+                <dd className="mt-2 ml-16 text-base text-gray-500">
+                  The pastors of the church must, at a minimum, affirm the 1689 even if the church’s statement of faith is not officially the 1689.
+                </dd>
+              </div>
+
+              <div className="relative">
+                <dt>
+                  <div className="absolute flex items-center justify-center h-12 w-12 rounded-md bg-black text-white">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-dollar-sign"><line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                  </div>
+                  <p className="ml-16 text-lg leading-6 font-medium text-gray-900">Annual Dues</p>
+                </dt>
+                <dd className="mt-2 ml-16 text-base text-gray-500">
+                  The minimal financial commitment for a local church to become a member of the G3 Church Network is $500 / yr.
+                </dd>
+              </div>
+
+              <div className="relative">
+                <dt>
+                  <div className="absolute flex items-center justify-center h-12 w-12 rounded-md bg-black text-white">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-church"><path d="m18 7 4 2v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9l4-2"/><path d="M14 22v-4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v4"/><path d="M18 22V5l-6-3-6 3v17"/><path d="M12 7v5"/><path d="M10 9h4"/></svg>
+                  </div>
+                  <p className="ml-16 text-lg leading-6 font-medium text-gray-900">Ecclesiology</p>
+                </dt>
+                <dd className="mt-2 ml-16 text-base text-gray-500">
+                  The church must have a plurality of elders and practice church discipline, or at least working toward these ideals.
                 </dd>
               </div>
             </dl>
