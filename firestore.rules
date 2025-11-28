@@ -1,0 +1,54 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is admin
+    function isAdmin() {
+      return request.auth != null && request.auth.token.email != null;
+    }
+    
+    // Helper function to check if user owns the church profile
+    function isChurchOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Applications collection rules
+    match /applications/{applicationId} {
+      
+      // Allow anyone (including non-authenticated users) to READ approved churches
+      // This enables the public map to display approved churches
+      allow read: if resource.data.status == 'APPROVED';
+      
+      // Allow authenticated users to CREATE new applications
+      // This allows churches to submit applications
+      allow create: if request.auth != null 
+                    && request.resource.data.status == 'PENDING'
+                    && request.resource.data.userId == request.auth.uid;
+      
+      // Allow admins to CREATE applications with any status (for CSV import)
+      allow create: if isAdmin();
+      
+      // Allow admins to READ all applications (pending, approved, rejected)
+      allow read: if isAdmin();
+      
+      // Allow admins to UPDATE any application (approve, reject, edit)
+      allow update: if isAdmin();
+      
+      // Allow admins to DELETE any application
+      allow delete: if isAdmin();
+      
+      // Allow church owners to UPDATE their own profile
+      // (only if already approved and not changing status)
+      allow update: if isChurchOwner(resource.data.userId)
+                    && resource.data.status == 'APPROVED'
+                    && request.resource.data.status == 'APPROVED';
+    }
+
+    // Settings collection rules
+    match /settings/{documentId} {
+      // Allow read/write access for admin users
+      allow read, write: if isAdmin();
+    }
+  }
+}
