@@ -1,6 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { ChurchApplication } from '../types';
-import { MapPin, Globe, ChevronDown, ChevronUp } from 'lucide-react';
+import { Church } from 'lucide-react'; // Import the Church icon
+
+const DEFAULT_CHURCH_LOGO_SVG_DATA_URL = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGNsYXNzPSJsdWNpZGUgbHVjaWRlLWNodXJjaCI+PHBhdGggZD0iTTE4IDdWMjJoLTR2NSIvPjxwYXRoIGQ9Ik04IDdWMjJIMHY1Ii8+PHBhdGggZD0iTTEyIDIydi04Ii8+PHBhdGggZD0iTTggMjJ2LTRINHh2NCIvPjxwYXRoIGQ9Ik0xOCAyMnYtNGg0djQiLz48cGF0aCBkPSJNIDQgMTRoMTZWN0g0eiIvPjwvc3ZnPg==';
 
 interface ChurchListProps {
   churches: ChurchApplication[];
@@ -8,50 +10,23 @@ interface ChurchListProps {
   selectedChurch: ChurchApplication | null;
 }
 
-type SortOption = 'name' | 'country' | 'city' | 'recent';
-
 export const ChurchList: React.FC<ChurchListProps> = ({ 
   churches, 
   onSelectChurch, 
   selectedChurch 
 }) => {
-  const [sortBy, setSortBy] = useState<SortOption>('name');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
-
-  const sortedChurches = [...churches].sort((a, b) => {
-    let comparison = 0;
-    
-    switch (sortBy) {
-      case 'name':
-        comparison = a.churchName.localeCompare(b.churchName);
-        break;
-      case 'country':
-        comparison = (a.churchAddress?.country || '').localeCompare(b.churchAddress?.country || '');
-        break;
-      case 'city':
-        comparison = (a.churchAddress?.city || '').localeCompare(b.churchAddress?.city || '');
-        break;
-      case 'recent':
-        comparison = new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime();
-        break;
-    }
-
-    return sortOrder === 'asc' ? comparison : -comparison;
-  });
-
-  const handleSortChange = (newSortBy: SortOption) => {
-    if (sortBy === newSortBy) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortBy(newSortBy);
-      setSortOrder('asc');
-    }
-  };
-
-  const truncateText = (text: string, maxLength: number) => {
-    if (text.length <= maxLength) return text;
-    return text.slice(0, maxLength) + '...';
-  };
+  const sortedChurches = useMemo(() => {
+    return [...churches].sort((a, b) => {
+      // Always put Pray's Mill Baptist Church at the top
+      const isPraysMillA = a.churchName.toLowerCase().includes("pray's mill");
+      const isPraysMillB = b.churchName.toLowerCase().includes("pray's mill");
+      
+      if (isPraysMillA && !isPraysMillB) return -1;
+      if (!isPraysMillA && isPraysMillB) return 1;
+      
+      return a.churchName.localeCompare(b.churchName);
+    });
+  }, [churches]);
 
   // Generate church initials for avatar
   const getChurchInitials = (name: string): string => {
@@ -89,10 +64,8 @@ export const ChurchList: React.FC<ChurchListProps> = ({
                       className="flex-shrink-0 w-12 h-12 rounded-full object-cover border border-gray-200"
                     />
                   ) : (
-                    <div className="flex-shrink-0 w-12 h-12 rounded-full bg-[#7d7d7d] flex items-center justify-center">
-                      <span className="text-white font-bold text-base">
-                        {getChurchInitials(church.churchName)}
-                      </span>
+                    <div className="flex-shrink-0 w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center text-gray-500">
+                      <Church className="w-6 h-6" />
                     </div>
                   )}
 
@@ -102,26 +75,10 @@ export const ChurchList: React.FC<ChurchListProps> = ({
                       {church.churchName}
                     </h4>
                     
-                    <div className="flex items-center text-sm text-gray-600 mb-2">
-                      <span className="truncate">
+                    <div className="text-sm text-gray-600">
+                      <span className="truncate block">
                         {(church.churchAddress?.city || 'N/A')}, {(church.churchAddress?.state ? `${church.churchAddress.state}, ` : '') || ''}{(church.churchAddress?.country || 'N/A')}
                       </span>
-                    </div>
-
-                    {/* Action Buttons */}
-                    <div className="flex items-center gap-4">
-                      {church.churchWebsite && (
-                        <a
-                          href={church.churchWebsite}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1 transition-colors"
-                        >
-                          <Globe className="w-4 h-4" />
-                          <span>Website</span>
-                        </a>
-                      )}
                     </div>
                   </div>
                 </div>

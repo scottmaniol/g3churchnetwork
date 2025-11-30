@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useMemo } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { ChurchApplication, ApplicationStatus } from '../types';
-import { ArrowLeft, Search, List, Map as MapIcon, LayoutGrid } from 'lucide-react';
+import { ArrowLeft, Search, List, Map as MapIcon, LayoutGrid, Church as ChurchIcon } from 'lucide-react';
 import { ChurchList } from './ChurchList';
 import { ChurchDetailModal } from './ChurchDetailModal';
 
@@ -13,11 +13,12 @@ interface WorldMapProps {
   churches: ChurchApplication[];
   onBack: () => void;
   onJoinClick: () => void;
+  onJobClick: (jobId: string) => void;
 }
 
 type ViewMode = 'map' | 'list' | 'split';
 
-export const WorldMap: React.FC<WorldMapProps> = ({ churches, onBack, onJoinClick }) => {
+export const WorldMap: React.FC<WorldMapProps> = ({ churches, onBack, onJoinClick, onJobClick }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
@@ -27,15 +28,24 @@ export const WorldMap: React.FC<WorldMapProps> = ({ churches, onBack, onJoinClic
   const [viewMode, setViewMode] = useState<ViewMode>('split');
   const [highlightedChurch, setHighlightedChurch] = useState<ChurchApplication | null>(null);
   
-  // Zip Search State
-  const [zipCode, setZipCode] = useState('');
   const [radius, setRadius] = useState('50');
   const [zipCoords, setZipCoords] = useState<{ lat: number; lng: number } | null>(null);
-  const [isGeocodingZip, setIsGeocodingZip] = useState(false);
+  const [isGeocoding, setIsGeocoding] = useState(false);
 
   const activeChurches = useMemo(() => {
     return churches.filter(
-      c => c.status === ApplicationStatus.APPROVED && c.coordinates && typeof c.coordinates.lat === 'number' && typeof c.coordinates.lng === 'number'
+      c => c.status === ApplicationStatus.APPROVED && 
+      c.coordinates && 
+      typeof c.coordinates.lat === 'number' && 
+      typeof c.coordinates.lng === 'number' &&
+      !isNaN(c.coordinates.lat) &&
+      !isNaN(c.coordinates.lng) &&
+      isFinite(c.coordinates.lat) &&
+      isFinite(c.coordinates.lng) &&
+      c.coordinates.lat >= -90 &&
+      c.coordinates.lat <= 90 &&
+      c.coordinates.lng >= -180 &&
+      c.coordinates.lng <= 180
     );
   }, [churches]);
 
@@ -53,16 +63,17 @@ export const WorldMap: React.FC<WorldMapProps> = ({ churches, onBack, onJoinClic
   };
 
   const filteredChurches = useMemo(() => {
+    const isZipCodeSearch = /^\d{5}(-\d{4})?$/.test(searchQuery.trim());
+
     const filtered = activeChurches.filter(church => {
-      // Text search filter
-      if (searchQuery) {
+      // Text search filter (only if not a zip code search)
+      if (searchQuery && !isZipCodeSearch) {
         const query = searchQuery.toLowerCase();
-        const address = church.churchAddress || {};
         const matchesSearch = (
           church.churchName.toLowerCase().includes(query) ||
-          (address.city && address.city.toLowerCase().includes(query)) ||
-          (address.country && address.country.toLowerCase().includes(query)) ||
-          (address.state && address.state.toLowerCase().includes(query))
+          (church.churchAddress?.city && church.churchAddress.city.toLowerCase().includes(query)) ||
+          (church.churchAddress?.country && church.churchAddress.country.toLowerCase().includes(query)) ||
+          (church.churchAddress?.state && church.churchAddress.state.toLowerCase().includes(query))
         );
         if (!matchesSearch) return false;
       }
@@ -119,12 +130,33 @@ export const WorldMap: React.FC<WorldMapProps> = ({ churches, onBack, onJoinClic
       const el = document.createElement('div');
       el.className = 'marker';
 
+      // Create enhanced popup HTML with logo
+      const logoHtml = church.churchLogoUrl
+        ? `<img src="${church.churchLogoUrl}" alt="${church.churchName}" class="popup-logo" onerror="this.style.display='none'" />`
+        : ``; // If no churchLogoUrl, display nothing
+
+      const popupHtml = `
+        <div class="church-popup">
+          <div class="popup-header">
+            ${logoHtml}
+            <div class="popup-info">
+              <h6 class="popup-title">${church.churchName}</h6>
+              <p class="popup-location">${church.churchAddress?.city || ''}, ${church.churchAddress?.state || church.churchAddress?.country || ''}</p>
+            </div>
+          </div>
+          <div class="popup-footer">
+            <span class="popup-hint">Click for details →</span>
+          </div>
+        </div>
+      `;
+
       const popup = new mapboxgl.Popup({
-        closeButton: false,
+        closeButton: true,
         closeOnClick: false,
         offset: 15,
-        className: 'marker-popup'
-      }).setHTML(`<h6>${church.churchName}</h6><p>${church.churchAddress.city}, ${church.churchAddress.state}</p>`);
+        className: 'enhanced-marker-popup',
+        maxWidth: '320px'
+      }).setHTML(popupHtml);
 
       const marker = new mapboxgl.Marker(el)
         .setLngLat([church.coordinates!.lng, church.coordinates!.lat])
@@ -180,29 +212,45 @@ export const WorldMap: React.FC<WorldMapProps> = ({ churches, onBack, onJoinClic
     setHighlightedChurch(church);
   };
 
-  const handleZipSearch = async () => {
-    if (!zipCode.trim()) {
+  const handleSearch = async () => {
+    const query = searchQuery.trim();
+    if (!query) {
       setZipCoords(null);
       return;
     }
 
-    setIsGeocodingZip(true);
+    setIsGeocoding(true);
     try {
-      const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(zipCode)}.json?access_token=${mapboxgl.accessToken}&types=postcode&limit=1`);
+      const isZipCode = /^\d{5}(-\d{4})?$/.test(query);
+      const types = isZipCode ? 'postcode' : 'place,locality,address';
+      
+      const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${mapboxgl.accessToken}&limit=1&types=${types}`);
       const data = await response.json();
       
       if (data.features && data.features.length > 0) {
         const [lng, lat] = data.features[0].center;
         setZipCoords({ lat, lng });
       } else {
-        alert('Zip code not found. Please try again.');
+        alert('Location not found. Please try again.');
         setZipCoords(null);
       }
     } catch (error) {
-      console.error('Error geocoding zip code:', error);
-      alert('Failed to search by zip code. Please try again.');
+      console.error('Error geocoding:', error);
+      alert('Failed to search by location. Please try again.');
     } finally {
-      setIsGeocodingZip(false);
+      setIsGeocoding(false);
+    }
+  };
+
+  const clearSearch = () => {
+    setSearchQuery('');
+    setZipCoords(null);
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.flyTo({
+        center: [-98.5795, 39.8283],
+        zoom: 3.5,
+        duration: 1500
+      });
     }
   };
 
@@ -222,7 +270,7 @@ export const WorldMap: React.FC<WorldMapProps> = ({ churches, onBack, onJoinClic
 
           <button
             onClick={onJoinClick}
-            className="hidden md:block mr-4 px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800 transition-colors text-sm font-medium"
+            className="hidden md:block mr-4 px-4 py-2 bg-black text-white rounded-lg hover:bg-[#ba9150] transition-colors text-sm font-medium"
           >
             Join the Network
           </button>
@@ -235,16 +283,25 @@ export const WorldMap: React.FC<WorldMapProps> = ({ churches, onBack, onJoinClic
           </div>
         </div>
 
-        {/* Zip Code Radius Search */}
-        <div className="flex gap-2">
-          <input
-            type="text"
-            placeholder="Enter zip code"
-            value={zipCode}
-            onChange={(e) => setZipCode(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleZipSearch()}
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black"
-          />
+        {/* Search Bar */}
+        <div className="flex gap-2 items-center">
+          <div className="relative flex-1">
+            <input
+              type="text"
+              placeholder="Search by church, city, zip..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black"
+            />
+            {searchQuery && (
+              <button onClick={clearSearch} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-800">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
           <select value={radius} onChange={(e) => setRadius(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg bg-white">
             <option value="10">10 mi</option>
             <option value="25">25 mi</option>
@@ -252,8 +309,8 @@ export const WorldMap: React.FC<WorldMapProps> = ({ churches, onBack, onJoinClic
             <option value="100">100 mi</option>
             <option value="250">250 mi</option>
           </select>
-          <button onClick={handleZipSearch} disabled={isGeocodingZip || !zipCode.trim()} className="px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800 disabled:opacity-50">
-            {isGeocodingZip ? '...' : 'Search'}
+          <button onClick={handleSearch} disabled={isGeocoding || !searchQuery.trim()} className="px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800 disabled:opacity-50">
+            {isGeocoding ? '...' : 'Search'}
           </button>
         </div>
       </div>
@@ -283,6 +340,7 @@ export const WorldMap: React.FC<WorldMapProps> = ({ churches, onBack, onJoinClic
           setSelectedChurch(null);
           setHighlightedChurch(null);
         }}
+        onJobClick={onJobClick}
       />
     </div>
   );

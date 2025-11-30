@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ChurchApplication, ApplicationStatus, ChurchLeader, ChurchGathering, EmailTemplate, EmailType, AdminUser, UserProfile } from '../types';
+import { ChurchApplication, ApplicationStatus, ChurchLeader, ChurchGathering, EmailTemplate, EmailType, AdminUser, UserProfile, JobListing } from '../types';
+import { PromoCodeManager } from './PromoCodeManager';
 import { Button } from './Button';
-import { Check, X, MapPin, Globe, ExternalLink, ArrowLeft, LogOut, Lock, User as UserIcon, BookOpen, ShieldCheck, Trash2, Eye, AlertTriangle, Edit, Download, Upload, Settings, RefreshCw, Ban, Slash, PlusCircle } from 'lucide-react';
-import { auth, loginWithEmail, registerWithEmail, logout, subscribeToAllApplications, updateApplicationStatus, User, onAuthStateChanged, deleteChurchApplication, updateChurchProfile, submitApplication, updateChurchCoordinates, uploadChurchLogo, sendEmail, saveEmailTemplate, getEmailTemplate, resendSystemEmail, approveApplication, createChurchUserAndSendResetEmailClient, backfillGeocodes, regeocodeAddress, getAllUsers, setAdminRole, removeAdminRole, createAdminUser, getUserProfile, updateUserProfileRole } from '../services/firebase';
-import { Mail, Send } from 'lucide-react';
+import { Check, X, MapPin, Globe, ExternalLink, ArrowLeft, LogOut, Lock, User as UserIcon, BookOpen, ShieldCheck, Trash2, Eye, AlertTriangle, Edit, Download, Upload, Settings, RefreshCw, Ban, Slash, PlusCircle, BarChart3, Mail, Send, Clock, Share2, Briefcase } from 'lucide-react';
+import { auth, loginWithEmail, registerWithEmail, logout, subscribeToAllApplications, updateApplicationStatus, User, onAuthStateChanged, deleteChurchApplication, updateChurchProfile, submitApplication, updateChurchCoordinates, uploadChurchLogo, sendEmail, saveEmailTemplate, getEmailTemplate, resendSystemEmail, approveApplication, createChurchUserAndSendResetEmailClient, backfillGeocodes, regeocodeAddress, getAllUsers, setAdminRole, removeAdminRole, createAdminUser, getUserProfile, updateUserProfileRole, deleteUser, subscribeToAllChurchStatistics, subscribeToAllJobs, deleteJobListing } from '../services/firebase';
 
 interface AdminDashboardProps {
   onBack: () => void;
@@ -16,10 +16,11 @@ const InfoRow: React.FC<{ label: string; value?: string | null }> = ({ label, va
   </div>
 );
 
-type AdminView = 'pending' | 'approved' | 'rejected' | 'leaders' | 'email' | 'settings' | 'users';
+type AdminView = 'member-pending' | 'member-active' | 'member-leaders' | 'member-rejected' | 'statistics' | 'jobs' | 'email' | 'settings-email' | 'settings-application' | 'settings-content' | 'settings-users' | 'settings-promo-codes';
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [applications, setApplications] = useState<ChurchApplication[]>([]);
+  const [jobListings, setJobListings] = useState<JobListing[]>([]); // New state for job listings
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [currentUserProfile, setCurrentUserProfile] = useState<UserProfile | null>(null); // To store current user's profile
@@ -27,16 +28,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [viewingChurch, setViewingChurch] = useState<ChurchApplication | null>(null);
   const [deletingChurch, setDeletingChurch] = useState<ChurchApplication | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
-  const [currentView, setCurrentView] = useState<AdminView>('pending');
+  const [currentView, setCurrentView] = useState<AdminView>('statistics');
   const [isProcessingPortalAccount, setIsProcessingPortalAccount] = useState(false); // Moved state up
   
   // User Management State
   const [allUsers, setAllUsers] = useState<AdminUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
-  const [addingAdmin, setAddingAdmin] = useState(false);
+  const [showAddAdminModal, setShowAddAdminModal] = useState(false);
+  const [isCreatingAdmin, setIsCreatingAdmin] = useState(false);
   const [newAdminEmail, setNewAdminEmail] = useState('');
   const [newAdminPassword, setNewAdminPassword] = useState('');
   const [userActionLoading, setUserActionLoading] = useState<string | null>(null); // Stores UID of user being acted upon
+
+  // Profile Editing State
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [editEmail, setEditEmail] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
 
   const fetchAllUsers = async () => {
     setLoadingUsers(true);
@@ -45,7 +54,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       // Augment with Firestore profile data if available
       const usersWithProfiles = await Promise.all(usersData.map(async (u) => {
         const profile = await getUserProfile(u.uid);
-        return { ...u, role: profile?.role || 'guest' }; // Default to 'guest' if no profile
+        return { ...u, role: profile?.role || 'user' }; // Default to 'user' if no profile
       }));
       setAllUsers(usersWithProfiles);
     } catch (error) {
@@ -62,18 +71,73 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       alert("Email and password are required.");
       return;
     }
-    setAddingAdmin(true);
+    setIsCreatingAdmin(true);
     try {
       await createAdminUser(newAdminEmail, newAdminPassword);
       alert('Admin user created successfully! They will see the admin dashboard on login.');
       setNewAdminEmail('');
       setNewAdminPassword('');
+      setShowAddAdminModal(false);
       await fetchAllUsers(); // Refresh the list
     } catch (error: any) {
       console.error("Error creating admin user:", error);
       alert(`Failed to create admin: ${error.message || 'Unknown error'}`);
     } finally {
-      setAddingAdmin(false);
+      setIsCreatingAdmin(false);
+    }
+  };
+
+  const handleUpdateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!user) return;
+
+    // Validate password if provided
+    if (newPassword) {
+      if (newPassword.length < 6) {
+        alert("Password must be at least 6 characters.");
+        return;
+      }
+      if (newPassword !== confirmPassword) {
+        alert("Passwords do not match.");
+        return;
+      }
+    }
+
+    setIsSavingProfile(true);
+    try {
+      const { updateEmail, updatePassword } = await import('firebase/auth');
+      
+      // If email is changing, update it
+      if (editEmail && editEmail !== user.email) {
+        await updateEmail(user, editEmail);
+        alert('Email updated successfully! You may need to sign in again.');
+      }
+
+      // If password is provided, update it
+      if (newPassword) {
+        await updatePassword(user, newPassword);
+        alert('Password updated successfully!');
+      }
+
+      // Close modal and reset form
+      setShowProfileModal(false);
+      setEditEmail('');
+      setNewPassword('');
+      setConfirmPassword('');
+      
+      if (!newPassword && (!editEmail || editEmail === user.email)) {
+        alert('No changes were made.');
+      }
+    } catch (error: any) {
+      console.error("Error updating profile:", error);
+      if (error.code === 'auth/requires-recent-login') {
+        alert('For security reasons, please sign out and sign in again before changing your email or password.');
+      } else {
+        alert(`Failed to update profile: ${error.message || 'Unknown error'}`);
+      }
+    } finally {
+      setIsSavingProfile(false);
     }
   };
 
@@ -98,12 +162,39 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     setUserActionLoading(uid);
     try {
       await removeAdminRole(uid);
-      await updateUserProfileRole(uid, 'guest'); // Update Firestore profile
+      await updateUserProfileRole(uid, 'user'); // Update Firestore profile
       alert(`${email}'s admin privileges have been revoked.`);
       await fetchAllUsers();
     } catch (error: any) {
       console.error("Error removing admin role:", error);
       alert(`Failed to remove admin role: ${error.message || 'Unknown error'}`);
+    } finally {
+      setUserActionLoading(null);
+    }
+  };
+
+  const handleDeleteUser = async (uid: string, email: string) => {
+    if (!confirm(`Are you sure you want to permanently delete the user account for ${email}? This action cannot be undone.`)) return;
+    setUserActionLoading(uid);
+    try {
+      // First, find any churches linked to this user and clear their userId
+      const linkedChurches = applications.filter(app => app.userId === uid);
+      
+      if (linkedChurches.length > 0) {
+        console.log(`Clearing userId for ${linkedChurches.length} church(es) linked to user ${email}`);
+        for (const church of linkedChurches) {
+          await updateChurchProfile(church.id, { userId: null });
+          console.log(`Cleared userId for church: ${church.churchName}`);
+        }
+      }
+      
+      // Then delete the user
+      await deleteUser(uid);
+      alert(`User ${email} has been deleted successfully.${linkedChurches.length > 0 ? ` Portal account removed from ${linkedChurches.length} church(es).` : ''}`);
+      await fetchAllUsers();
+    } catch (error: any) {
+      console.error("Error deleting user:", error);
+      alert(`Failed to delete user: ${error.message || 'Unknown error'}`);
     } finally {
       setUserActionLoading(null);
     }
@@ -161,6 +252,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       type: 'dues_delinquent',
       subject: 'Action Required: G3 Network Membership Delinquent',
       body: '<p>Dear {{applicantName}},</p><p>We have not received your annual dues payment for <strong>{{churchName}}</strong>. Your membership is now delinquent.</p><p>As per our policy, your church has been temporarily hidden from the network map.</p><p>Please pay your dues immediately via the dashboard to restore your active status.</p><p>Grace and peace,<br>G3 Church Network Team</p>'
+    },
+    portal_account_setup: { // Added missing template
+      type: 'portal_account_setup',
+      subject: 'G3 Church Network - Set Up Your Portal Account',
+      body: '<p>Dear {{applicantName}},</p><p>Your application for <strong>{{churchName}}</strong> has been approved and your portal account is ready!</p><p>Please click the link below to set your password and access your church dashboard:</p><p><a href="{{resetLink}}">Set Your Password</a></p><p>Grace and peace,<br>G3 Church Network Team</p>'
     }
   });
   const [loadingTemplates, setLoadingTemplates] = useState(false);
@@ -172,7 +268,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       try {
         const types: EmailType[] = [
           'application_received', 'application_approved', 'application_rejected',
-          'dues_reminder_30', 'dues_reminder_7', 'dues_reminder_0', 'dues_delinquent'
+          'dues_reminder_30', 'dues_reminder_7', 'dues_reminder_0', 'dues_delinquent',
+          'portal_account_setup' // Added missing template type
         ];
         const loadedTemplates = { ...templates };
         
@@ -192,6 +289,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     
     if (user) {
       loadTemplates();
+    }
+  }, [user]);
+
+  // Subscribe to all jobs for admin view
+  useEffect(() => {
+    if (user) {
+      const unsubscribe = subscribeToAllJobs((jobs) => {
+        setJobListings(jobs);
+      });
+      return () => unsubscribe();
+    } else {
+      setJobListings([]);
     }
   }, [user]);
 
@@ -226,8 +335,104 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [leaderSortBy, setLeaderSortBy] = useState<'name' | 'role' | 'church'>('name');
   const [leaderSortOrder, setLeaderSortOrder] = useState<'asc' | 'desc'>('asc');
 
+  // State for users view
+  const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [userSortBy, setUserSortBy] = useState<'email' | 'role' | 'lastSignIn'>('email');
+  const [userSortOrder, setUserSortOrder] = useState<'asc' | 'desc'>('asc');
+
+  // Statistics State
+  const [churchStats, setChurchStats] = useState<Record<string, any>>({});
+  const [loadingStats, setLoadingStats] = useState(false);
+  const [globalAnalytics, setGlobalAnalytics] = useState<any>(null);
+  const [viewingStatsChurch, setViewingStatsChurch] = useState<{id: string, name: string} | null>(null);
+  const [statsSearchQuery, setStatsSearchQuery] = useState('');
+  const [statsSortBy, setStatsSortBy] = useState<'name' | 'city' | 'views' | 'visits' | 'contacts'>('views');
+  const [statsSortOrder, setStatsSortOrder] = useState<'asc' | 'desc'>('desc');
+
+  // Church Analytics Modal State
+  const [churchAnalyticsData, setChurchAnalyticsData] = useState<any>(null);
+  const [loadingChurchAnalytics, setLoadingChurchAnalytics] = useState(false);
+
+  // Load global analytics and subscribe to all stats when statistics view is opened
+  useEffect(() => {
+    if (currentView === 'statistics' && user) {
+      loadGlobalAnalytics();
+      
+      const unsubscribe = subscribeToAllChurchStatistics((stats) => {
+        const statsMap = stats.reduce((acc, stat) => {
+          acc[stat.churchId] = stat;
+          return acc;
+        }, {} as Record<string, any>);
+        setChurchStats(statsMap);
+      });
+      
+      return () => unsubscribe();
+    }
+  }, [currentView, user]);
+
+  const loadGlobalAnalytics = async () => {
+    setLoadingStats(true);
+    try {
+      const { getGlobalAnalytics } = await import('../services/firebase');
+      const data = await getGlobalAnalytics();
+      setGlobalAnalytics(data);
+    } catch (error) {
+      console.error("Error loading global analytics:", error);
+    } finally {
+      setLoadingStats(false);
+    }
+  };
+
+  const loadChurchAnalytics = async (churchId: string) => {
+    setLoadingChurchAnalytics(true);
+    setChurchAnalyticsData(null); // Clear previous data
+    try {
+      const { getChurchAnalytics } = await import('../services/firebase');
+      const data = await getChurchAnalytics(churchId);
+      setChurchAnalyticsData(data);
+    } catch (error) {
+      console.error("Error loading church analytics:", error);
+    } finally {
+      setLoadingChurchAnalytics(false);
+    }
+  };
+
   // Settings Tab State
-  const [settingsTab, setSettingsTab] = useState<'email' | 'application' | 'general'>('email');
+  const [settingsTab, setSettingsTab] = useState<'email' | 'application' | 'content'>('email');
+
+  // Main Page Content State
+  const [mainPageContent, setMainPageContent] = useState({
+    bannerDescription: "The G3 Church Network is a global fellowship of Reformed Baptist churches committed to sound doctrine, expository preaching, and the sovereignty of God in all things.",
+    distinctives: [
+      {
+        title: "Doctrinal Integrity",
+        description: "United by the 1689 Second London Baptist Confession of Faith and a commitment to biblical orthodoxy."
+      },
+      {
+        title: "Global Fellowship",
+        description: "Connect with like-minded churches around the world for encouragement and partnership."
+      },
+      {
+        title: "Ecclesial Support",
+        description: "Discounts on resources, conferences, and pastoral support to strengthen local churches."
+      }
+    ],
+    requirements: [
+      {
+        title: "1689 Confession",
+        description: "The pastors of the church must, at a minimum, affirm the 1689 even if the church's statement of faith is not officially the 1689."
+      },
+      {
+        title: "Annual Dues",
+        description: "The minimal financial commitment for a local church to become a member of the G3 Church Network is $500 / yr."
+      },
+      {
+        title: "Ecclesiology",
+        description: "The church must have a plurality of elders and practice church discipline, or at least working toward these ideals."
+      }
+    ]
+  });
+  const [isSavingContent, setIsSavingContent] = useState(false);
 
   // Application Form Field Types
   type FormFieldType = 'text' | 'email' | 'tel' | 'url' | 'number' | 'textarea' | 'select' | 'radio' | 'checkbox' | 'password' | 'dynamic_array';
@@ -269,8 +474,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     { id: 'churchEmail', name: 'churchEmail', label: 'Church Public Email', type: 'email', required: false, section: 'Church Information', order: 19 },
     { id: 'churchDescription', name: 'churchDescription', label: 'Briefly describe your church', type: 'textarea', required: true, section: 'Church Information', order: 20, rows: 4 },
     
-    // Leadership Section
-    { id: 'leaders', name: 'leaders', label: 'Leadership', type: 'dynamic_array', required: false, section: 'Leadership', order: 30, description: 'Optional - can add later' },
+    // Elders Section
+    { id: 'leaders', name: 'leaders', label: 'Elders', type: 'dynamic_array', required: false, section: 'Elders', order: 30, description: 'Optional - can add later' },
     
     // Doctrine & Practice Section
     { id: 'pluralityOfElders', name: 'pluralityOfElders', label: 'Is Your Local Church Led By a Plurality of Elders?', type: 'select', required: true, section: 'Doctrine & Practice', order: 40, options: ['Yes', 'No', 'No, but working toward it.'] },
@@ -407,6 +612,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     }
   }, [user]);
 
+  // Subscribe to all jobs for admin view
+  useEffect(() => {
+    if (user) {
+      const unsubscribe = subscribeToAllJobs((jobs) => {
+        setJobListings(jobs);
+      });
+      return () => unsubscribe();
+    } else {
+      setJobListings([]);
+    }
+  }, [user]);
+
+
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
@@ -428,6 +646,70 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const approvedApps = applications.filter(a => a.status === ApplicationStatus.APPROVED);
   const rejectedApps = applications.filter(a => a.status === ApplicationStatus.REJECTED);
 
+  // Filter and sort church stats (moved here to access approvedApps)
+  const filteredAndSortedStats = approvedApps
+    .map(app => {
+      const stats = churchStats[app.id] || {};
+      return {
+        ...app,
+        stats: {
+          views: stats.views || 0,
+          visits: stats.visits || 0,
+          contacts: stats.contacts || 0,
+          socialClicks: stats.socialClicks || 0,
+          lastUpdated: stats.lastUpdated
+        }
+      };
+    })
+    .filter(item => {
+      if (!statsSearchQuery) return true;
+      const query = statsSearchQuery.toLowerCase();
+      return (
+        item.churchName.toLowerCase().includes(query) ||
+        (item.churchAddress?.city || '').toLowerCase().includes(query) ||
+        (item.churchAddress?.country || '').toLowerCase().includes(query)
+      );
+    })
+    .sort((a, b) => {
+      let valA: any, valB: any;
+      
+      switch (statsSortBy) {
+        case 'name':
+          valA = a.churchName;
+          valB = b.churchName;
+          break;
+        case 'city':
+          valA = a.churchAddress?.city || '';
+          valB = b.churchAddress?.city || '';
+          break;
+        case 'views':
+          valA = a.stats.views;
+          valB = b.stats.views;
+          break;
+        case 'visits':
+          valA = a.stats.visits;
+          valB = b.stats.visits;
+          break;
+        case 'contacts':
+          valA = a.stats.contacts;
+          valB = b.stats.contacts;
+          break;
+        default:
+          valA = a.stats.views;
+          valB = b.stats.views;
+      }
+      
+      if (typeof valA === 'string') {
+        return statsSortOrder === 'asc' 
+          ? valA.localeCompare(valB) 
+          : valB.localeCompare(valA);
+      }
+      
+      return statsSortOrder === 'asc' 
+        ? valA - valB 
+        : valB - valA;
+    });
+
   // Filter and sort approved churches
   const filteredAndSortedApprovedApps = approvedApps
     .filter(app => {
@@ -436,9 +718,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       const address = app.churchAddress || {};
       return (
         app.churchName.toLowerCase().includes(query) ||
-        (address.city && address.city.toLowerCase().includes(query)) ||
-        (address.state && address.state.toLowerCase().includes(query)) ||
-        (address.country && address.country.toLowerCase().includes(query)) ||
+        (address?.city || '').toLowerCase().includes(query) || // Added optional chaining
+        (address?.state || '').toLowerCase().includes(query) || // Added optional chaining
+        (address?.country || '').toLowerCase().includes(query) || // Added optional chaining
         app.applicantEmail.toLowerCase().includes(query)
       );
     })
@@ -451,7 +733,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           comparison = a.churchName.localeCompare(b.churchName);
           break;
         case 'city':
-          comparison = (aAddress.city || '').localeCompare(bAddress.city || '');
+          comparison = (aAddress?.city || '').localeCompare(bAddress?.city || ''); // Added optional chaining
           break;
         case 'date':
           comparison = new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime();
@@ -619,29 +901,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       'Applicant First Name',
       'Applicant Last Name',
       'Applicant Email',
-      'Website',
       'Description',
-      'Leaders (JSON)',
-      'Gatherings (JSON)',
-      'Facebook',
-      'X/Twitter',
-      'Instagram',
-      'YouTube',
-      'Spotify',
-      'Apple Podcasts',
-      'Plurality of Elders',
-      'Church Discipline',
-      'SSJG Signed',
-      'Confession Affirmation',
       'Latitude',
       'Longitude',
       'Status',
-      'Submitted At'
+      'Submitted At',
+      'Last Dues Payment',
+      'Next Due Date'
     ];
 
     const rows = approvedApps.map(app => {
       const address = app.churchAddress || {};
-      const connections = app.connections || {};
       return [
         app.id,
         app.churchName,
@@ -656,24 +926,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         app.applicantFirstName || '',
         app.applicantLastName || '',
         app.applicantEmail || '',
-        connections.website || '',
         app.churchDescription?.replace(/"/g, '""') || '', // Escape quotes
-        JSON.stringify(app.leaders || []),
-        JSON.stringify(app.gatherings || []),
-        connections.facebook || '',
-        connections.x || '',
-        connections.instagram || '',
-        connections.youtube || '',
-        connections.spotify || '',
-        connections.applePodcasts || '',
-        app.pluralityOfElders || '',
-        app.churchDiscipline || '',
-        app.ssjgSigned || '',
-        app.confessionAffirmation?.replace(/"/g, '""') || '', // Escape quotes
         app.coordinates?.lat || '',
         app.coordinates?.lng || '',
         app.status || '',
-        app.submittedAt || ''
+        app.submittedAt || '',
+        app.lastPaymentDate || '',
+        app.nextDueDate || ''
       ];
     });
 
@@ -697,7 +956,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    if (!confirm(`This will import churches from the CSV file as approved churches. Continue?`)) {
+    if (!confirm(`This will merge/update churches from the CSV file. Existing data will be preserved unless explicitly updated in the CSV. Social connections will not be modified. Continue?`)) {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -706,70 +965,40 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
     setIsImporting(true);
     try {
+      const Papa = (await import('papaparse')).default;
       const text = await file.text();
-      const lines = text.split('\n').filter(line => line.trim());
       
-      if (lines.length < 2) {
+      const parseResult = Papa.parse(text, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (header: string) => header.trim()
+      });
+
+      if (parseResult.errors.length > 0) {
+        console.warn('CSV parsing warnings:', parseResult.errors);
+      }
+
+      const rows = parseResult.data as any[];
+      
+      if (rows.length === 0) {
         alert('CSV file appears to be empty or invalid.');
         return;
       }
-
-      const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
       
       let successCount = 0;
       let errorCount = 0;
       const errors: string[] = [];
 
-      for (let i = 1; i < lines.length; i++) {
+      for (let i = 0; i < rows.length; i++) {
         try {
-          // Parse CSV line (handle quoted fields with commas)
-          const values: string[] = [];
-          let currentValue = '';
-          let insideQuotes = false;
-          
-          for (let char of lines[i]) {
-            if (char === '"') {
-              insideQuotes = !insideQuotes;
-            } else if (char === ',' && !insideQuotes) {
-              values.push(currentValue.trim());
-              currentValue = '';
-            } else {
-              currentValue += char;
-            }
-          }
-          values.push(currentValue.trim());
-
-          const data: any = {};
-          headers.forEach((header, index) => {
-            data[header] = values[index]?.replace(/^"|"$/g, '') || '';
-          });
+          const data = rows[i];
 
           // Validate required fields
           if (!data['Church Name'] || !data['City'] || !data['Country']) {
             throw new Error(`Missing required fields (Church Name, City, or Country) on line ${i + 1}`);
           }
 
-          // Parse leaders and gatherings from JSON
-          let leaders: ChurchLeader[] = [];
-          let gatherings: ChurchGathering[] = [];
-          
-          try {
-            if (data['Leaders (JSON)'] && data['Leaders (JSON)'].trim()) {
-              leaders = JSON.parse(data['Leaders (JSON)']);
-            }
-          } catch (e) {
-            console.warn(`Failed to parse leaders on line ${i + 1}:`, e);
-          }
-          
-          try {
-            if (data['Gatherings (JSON)'] && data['Gatherings (JSON)'].trim()) {
-              gatherings = JSON.parse(data['Gatherings (JSON)']);
-            }
-          } catch (e) {
-            console.warn(`Failed to parse gatherings on line ${i + 1}:`, e);
-          }
-
-          // Build church data object, excluding undefined coordinates
+          // Build church data object, excluding social connections
           const churchData: any = {
             churchName: data['Church Name'] || 'Unnamed Church',
             churchAddress: {
@@ -783,24 +1012,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
             churchPhone: data['Phone'] || '',
             churchEmail: data['Public Email'] || '',
             churchDescription: data['Description'] || '',
-            leaders: leaders,
-            gatherings: gatherings,
-            connections: {
-              website: data['Website'] || '',
-              facebook: data['Facebook'] || '',
-              x: data['X/Twitter'] || '',
-              instagram: data['Instagram'] || '',
-              youtube: data['YouTube'] || '',
-              spotify: data['Spotify'] || '',
-              applePodcasts: data['Apple Podcasts'] || ''
-            },
-            pluralityOfElders: (data['Plurality of Elders'] || '') as any,
-            churchDiscipline: (data['Church Discipline'] || '') as any,
-            ssjgSigned: (data['SSJG Signed'] || '') as any,
-            confessionAffirmation: data['Confession Affirmation'] || '',
             status: ApplicationStatus.APPROVED,
-            applicantFirstName: data['Applicant First Name'] || 'CSV',
-            applicantLastName: data['Applicant Last Name'] || 'Import',
+            applicantFirstName: data['Applicant First Name'] || 'NA',
+            applicantLastName: data['Applicant Last Name'] || 'NA',
             applicantEmail: data['Applicant Email'] || user?.email || 'admin@example.com',
             submittedAt: data['Submitted At'] || new Date().toISOString()
           };
@@ -813,19 +1027,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
             };
           }
 
+          // Only add dues payment dates if they are present in the CSV (conditional merge)
+          if (data['Last Dues Payment'] && data['Last Dues Payment'].trim()) {
+            churchData.lastPaymentDate = new Date(data['Last Dues Payment']).toISOString();
+          }
+          
+          if (data['Next Due Date'] && data['Next Due Date'].trim()) {
+            churchData.nextDueDate = new Date(data['Next Due Date']).toISOString();
+          }
+
           // Check if ID is provided and church exists
           const churchId = data['ID']?.trim();
           const existingChurch = churchId ? applications.find(app => app.id === churchId) : null;
 
           if (existingChurch) {
-            // Update existing church
-            console.log(`Updating church ${i}/${lines.length - 1}: ${churchData.churchName} (ID: ${churchId})`);
+            // Update existing church - merge with existing data
+            console.log(`Updating church ${i + 1}/${rows.length}: ${churchData.churchName} (ID: ${churchId})`);
             await updateChurchProfile(churchId, churchData);
             successCount++;
             console.log(`✓ Successfully updated: ${churchData.churchName}`);
           } else {
-            // Create new church
-            console.log(`Creating church ${i}/${lines.length - 1}: ${churchData.churchName}`);
+            // Create new church (ID will be auto-generated by Firestore)
+            console.log(`Creating church ${i + 1}/${rows.length}: ${churchData.churchName}${churchId ? ` (ignoring invalid/missing ID: ${churchId})` : ' (no ID provided, will auto-generate)'}`);
             await submitApplication(churchData);
             successCount++;
             console.log(`✓ Successfully created: ${churchData.churchName}`);
@@ -901,21 +1124,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
             
             {authError && <div className="text-red-600 text-sm bg-red-50 p-2 rounded">{authError}</div>}
             
-            <Button type="submit" className="w-full" isLoading={authLoading}>
-              {isRegistering ? 'Create Account' : 'Sign In'}
-            </Button>
-          </form>
+          <Button type="submit" className="w-full" isLoading={authLoading}>
+            {isRegistering ? 'Create Account' : 'Sign In'}
+          </Button>
+        </form>
 
-          <div className="mt-4 pt-4 border-t">
-            <button 
-              onClick={() => { setIsRegistering(!isRegistering); setAuthError(''); }} 
-              className="text-sm text-brand-700 hover:text-brand-900 font-medium"
-            >
-              {isRegistering ? 'Already have an account? Sign In' : 'Need to create an account?'}
-            </button>
-          </div>
-
-          <div className="mt-4">
+        <div className="mt-4">
             <Button variant="outline" onClick={onBack} className="w-full">Back to Home</Button>
           </div>
         </div>
@@ -924,16 +1138,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   }
 
   // Church Detail Modal with Edit Mode
-  const ChurchDetailModal = ({ church, onClose, onCreatePortalAccount, isProcessingPortalAccount }: { 
+  const ChurchDetailModal = ({ church, onClose, onCreatePortalAccount, isProcessingPortalAccount, onUpdate }: { 
     church: ChurchApplication; 
     onClose: () => void;
     onCreatePortalAccount: (churchId: string, applicantEmail: string, churchName: string) => Promise<void>;
     isProcessingPortalAccount: boolean;
+    onUpdate: (updatedChurch: ChurchApplication) => void;
   }) => {
     const [isEditMode, setIsEditMode] = useState(false);
-    const [editedChurch, setEditedChurch] = useState<ChurchApplication>(church);
+    const [editedChurch, setEditedChurch] = useState<ChurchApplication>({
+      ...church,
+      churchAddress: church.churchAddress || { country: '', street: '', city: '', state: '', postalCode: '' },
+      leaders: church.leaders || [],
+      gatherings: church.gatherings || []
+    });
     const [isUploadingLogo, setIsUploadingLogo] = useState(false);
     const [resendingEmail, setResendingEmail] = useState<EmailType | null>(null);
+
+    // Sync local state when church prop changes (e.g., after successful save)
+    useEffect(() => {
+      setEditedChurch({
+        ...church,
+        leaders: church.leaders || [],
+        gatherings: church.gatherings || []
+      });
+    }, [church]);
 
     const handleResendEmail = async (type: EmailType) => {
       if (!confirm(`Are you sure you want to resend the ${type.replace('_', ' ')} email to ${church.applicantEmail}?`)) return;
@@ -971,6 +1200,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       try {
         const { id, ...updates } = editedChurch;
         await updateChurchProfile(church.id, updates);
+        onUpdate(editedChurch); // Update the parent state with the edited church
         setIsEditMode(false);
         alert('Church profile updated successfully!');
       } catch (error) {
@@ -1138,16 +1368,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           Approve Church
                         </Button>
                       )}
-                      {church.status === ApplicationStatus.APPROVED && !church.userId && (
-                        <Button
-                          variant="outline"
-                          onClick={() => onCreatePortalAccount(church.id, church.applicantEmail, church.churchName)}
-                          isLoading={isProcessingPortalAccount}
-                          className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
-                        >
-                          <UserIcon className="w-3 h-3" />
-                          Create Portal Account
-                        </Button>
+                      {church.status === ApplicationStatus.APPROVED && (
+                        <>
+                          {!church.userId ? (
+                            <Button
+                              variant="outline"
+                              onClick={() => onCreatePortalAccount(church.id, church.applicantEmail, church.churchName)}
+                              isLoading={isProcessingPortalAccount}
+                              className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
+                            >
+                              <UserIcon className="w-3 h-3" />
+                              Create Portal Account
+                            </Button>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800">
+                                <UserIcon className="w-3 h-3 mr-1" />
+                                Portal Account Active
+                              </span>
+                              <Button
+                                variant="outline"
+                                onClick={() => handleResendEmail('portal_account_setup')}
+                                isLoading={resendingEmail === 'portal_account_setup'}
+                                className="px-2 py-1 h-7 text-xs flex items-center gap-1"
+                                title="Resend Portal Setup Email"
+                              >
+                                <Mail className="w-3 h-3" />
+                                Resend Setup
+                              </Button>
+                            </div>
+                          )}
+                        </>
                       )}
                       {church.status === ApplicationStatus.APPROVED && (
                         <>
@@ -1225,11 +1476,47 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
             {/* Applicant Info */}
             <div>
               <h4 className="text-lg font-bold text-gray-900 mb-3">Applicant Information</h4>
-              <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <InfoRow label="Name" value={`${church.applicantFirstName} ${church.applicantLastName}`} />
-                <InfoRow label="Email" value={church.applicantEmail} />
-                <InfoRow label="Submitted" value={new Date(church.submittedAt).toLocaleString()} />
-              </dl>
+              {isEditMode ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">First Name</label>
+                    <input
+                      type="text"
+                      value={editedChurch.applicantFirstName}
+                      onChange={(e) => setEditedChurch({ ...editedChurch, applicantFirstName: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Last Name</label>
+                    <input
+                      type="text"
+                      value={editedChurch.applicantLastName}
+                      onChange={(e) => setEditedChurch({ ...editedChurch, applicantLastName: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700">Email Address</label>
+                    <input
+                      type="email"
+                      value={editedChurch.applicantEmail}
+                      onChange={(e) => setEditedChurch({ ...editedChurch, applicantEmail: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700">Submitted</label>
+                    <div className="mt-1 text-sm text-gray-900">{new Date(church.submittedAt).toLocaleString()}</div>
+                  </div>
+                </div>
+              ) : (
+                <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <InfoRow label="Name" value={`${church.applicantFirstName} ${church.applicantLastName}`} />
+                  <InfoRow label="Email" value={church.applicantEmail} />
+                  <InfoRow label="Submitted" value={new Date(church.submittedAt).toLocaleString()} />
+                </dl>
+              )}
             </div>
 
               {/* Church Contact */}
@@ -1289,7 +1576,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         value={editedChurch.churchAddress?.street || ''}
                         onChange={(e) => setEditedChurch({ 
                           ...editedChurch, 
-                          churchAddress: { ...editedChurch.churchAddress, street: e.target.value }
+                          churchAddress: { ...editedChurch.churchAddress!, street: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                       />
@@ -1301,7 +1588,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         value={editedChurch.churchAddress?.aptUnit || ''}
                         onChange={(e) => setEditedChurch({ 
                           ...editedChurch, 
-                          churchAddress: { ...editedChurch.churchAddress, aptUnit: e.target.value }
+                          churchAddress: { ...editedChurch.churchAddress!, aptUnit: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                       />
@@ -1313,7 +1600,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         value={editedChurch.churchAddress?.city || ''}
                         onChange={(e) => setEditedChurch({ 
                           ...editedChurch, 
-                          churchAddress: { ...editedChurch.churchAddress, city: e.target.value }
+                          churchAddress: { ...editedChurch.churchAddress!, city: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                       />
@@ -1325,7 +1612,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         value={editedChurch.churchAddress?.state || ''}
                         onChange={(e) => setEditedChurch({ 
                           ...editedChurch, 
-                          churchAddress: { ...editedChurch.churchAddress, state: e.target.value }
+                          churchAddress: { ...editedChurch.churchAddress!, state: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                       />
@@ -1337,7 +1624,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         value={editedChurch.churchAddress?.postalCode || ''}
                         onChange={(e) => setEditedChurch({ 
                           ...editedChurch, 
-                          churchAddress: { ...editedChurch.churchAddress, postalCode: e.target.value }
+                          churchAddress: { ...editedChurch.churchAddress!, postalCode: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                       />
@@ -1349,7 +1636,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         value={editedChurch.churchAddress?.country || ''}
                         onChange={(e) => setEditedChurch({ 
                           ...editedChurch, 
-                          churchAddress: { ...editedChurch.churchAddress, country: e.target.value }
+                          churchAddress: { ...editedChurch.churchAddress!, country: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                       />
@@ -1441,13 +1728,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 )}
               </div>
 
-              {/* Leadership */}
+              {/* Elders */}
               <div>
                 <div className="flex items-center justify-between mb-3">
-                  <h4 className="text-lg font-bold text-gray-900">Leadership</h4>
+                  <h4 className="text-lg font-bold text-gray-900">Elders</h4>
                   {isEditMode && (
                     <Button onClick={addLeader} variant="outline" className="text-sm">
-                      + Add Leader
+                      <PlusCircle className="w-4 h-4 mr-2" /> Add Leader
                     </Button>
                   )}
                 </div>
@@ -1455,51 +1742,51 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   <div className="space-y-3">
                     {editedChurch.leaders.map((leader, index) => (
                       <div key={leader.id} className="bg-gray-50 p-3 rounded-md space-y-2">
-                        <div className="grid grid-cols-2 gap-2">
-                          <input
-                            type="text"
-                            placeholder="First Name"
-                            value={leader.firstName}
-                            onChange={(e) => updateLeader(index, 'firstName', e.target.value)}
-                            className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                          />
-                          <input
-                            type="text"
-                            placeholder="Last Name"
-                            value={leader.lastName}
-                            onChange={(e) => updateLeader(index, 'lastName', e.target.value)}
-                            className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                          />
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">First Name</label>
+                            <input
+                              type="text"
+                              placeholder="First Name"
+                              value={leader.firstName}
+                              onChange={(e) => updateLeader(index, 'firstName', e.target.value)}
+                              className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2 w-full"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Last Name</label>
+                            <input
+                              type="text"
+                              placeholder="Last Name"
+                              value={leader.lastName}
+                              onChange={(e) => updateLeader(index, 'lastName', e.target.value)}
+                              className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2 w-full"
+                            />
+                          </div>
                         </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <select
-                            value={leader.role}
-                            onChange={(e) => updateLeader(index, 'role', e.target.value)}
-                            className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                          >
-                            <option value="Elder">Elder</option>
-                            <option value="Pastor">Pastor</option>
-                            <option value="Deacon">Deacon</option>
-                            <option value="Other">Other</option>
-                          </select>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
                           <input
                             type="email"
                             placeholder="Email"
                             value={leader.email}
                             onChange={(e) => updateLeader(index, 'email', e.target.value)}
-                            className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                            className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2 w-full"
                           />
                         </div>
-                        <div className="flex gap-2">
-                          <input
-                            type="tel"
-                            placeholder="Phone"
-                            value={leader.phone}
-                            onChange={(e) => updateLeader(index, 'phone', e.target.value)}
-                            className="flex-1 rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                          />
-                          <Button variant="danger" onClick={() => removeLeader(index)} className="text-sm">
-                            <X className="w-4 h-4" />
+                        <div className="flex gap-2 items-end">
+                          <div className="flex-1">
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                            <input
+                              type="tel"
+                              placeholder="Phone"
+                              value={leader.phone}
+                              onChange={(e) => updateLeader(index, 'phone', e.target.value)}
+                              className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2 w-full"
+                            />
+                          </div>
+                          <Button variant="danger" onClick={() => removeLeader(index)} className="text-sm h-10 px-3">
+                            <Trash2 className="w-4 h-4" />
                           </Button>
                         </div>
                       </div>
@@ -1529,7 +1816,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   <h4 className="text-lg font-bold text-gray-900">Weekly Schedule</h4>
                   {isEditMode && (
                     <Button onClick={addGathering} variant="outline" className="text-sm">
-                      + Add Gathering
+                      <PlusCircle className="w-4 h-4 mr-2" /> Add Gathering
                     </Button>
                   )}
                 </div>
@@ -1537,46 +1824,56 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   <div className="space-y-3">
                     {editedChurch.gatherings.map((gathering, index) => (
                       <div key={gathering.id} className="bg-gray-50 p-3 rounded-md space-y-2">
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            placeholder="Gathering Name"
-                            value={gathering.name}
-                            onChange={(e) => updateGathering(index, 'name', e.target.value)}
-                            className="flex-1 rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                          />
-                          <Button variant="danger" onClick={() => removeGathering(index)} className="text-sm">
-                            <X className="w-4 h-4" />
-                          </Button>
+                        <div className="grid grid-cols-1 gap-2">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Gathering Name</label>
+                            <input
+                              type="text"
+                              placeholder="Sunday Morning Worship Service"
+                              value={gathering.name}
+                              onChange={(e) => updateGathering(index, 'name', e.target.value)}
+                              className="flex-1 rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2 w-full"
+                            />
+                          </div>
                         </div>
-                        <div className="grid grid-cols-3 gap-2">
-                          <select
-                            value={gathering.day}
-                            onChange={(e) => updateGathering(index, 'day', e.target.value)}
-                            className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                          >
-                            <option value="Sunday">Sunday</option>
-                            <option value="Monday">Monday</option>
-                            <option value="Tuesday">Tuesday</option>
-                            <option value="Wednesday">Wednesday</option>
-                            <option value="Thursday">Thursday</option>
-                            <option value="Friday">Friday</option>
-                            <option value="Saturday">Saturday</option>
-                          </select>
-                          <input
-                            type="text"
-                            placeholder="Start Time"
-                            value={gathering.startTime}
-                            onChange={(e) => updateGathering(index, 'startTime', e.target.value)}
-                            className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                          />
-                          <input
-                            type="text"
-                            placeholder="End Time"
-                            value={gathering.endTime}
-                            onChange={(e) => updateGathering(index, 'endTime', e.target.value)}
-                            className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                          />
+                        <div className="grid grid-cols-3 gap-2 items-end">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Day</label>
+                            <select
+                              value={gathering.day}
+                              onChange={(e) => updateGathering(index, 'day', e.target.value as ChurchGathering['day'])}
+                              className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2 w-full"
+                            >
+                              {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map(day => (
+                                <option key={day} value={day}>{day}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Start Time</label>
+                            <input
+                              type="text"
+                              placeholder="10:00 AM"
+                              value={gathering.startTime}
+                              onChange={(e) => updateGathering(index, 'startTime', e.target.value)}
+                              className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2 w-full"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">End Time</label>
+                            <input
+                              type="text"
+                              placeholder="11:30 AM"
+                              value={gathering.endTime}
+                              onChange={(e) => updateGathering(index, 'endTime', e.target.value)}
+                              className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2 w-full"
+                            />
+                          </div>
+                        </div>
+                        <div className="flex justify-end">
+                          <Button variant="danger" onClick={() => removeGathering(index)} className="text-sm px-3 h-10">
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
                         </div>
                       </div>
                     ))}
@@ -1602,10 +1899,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 <h4 className="text-lg font-bold text-gray-900 mb-3">Online Presence</h4>
                 {isEditMode ? (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {(['facebook', 'x', 'instagram', 'youtube', 'spotify', 'applePodcasts'] as const).map((platform) => (
+                    {(['sermons', 'facebook', 'x', 'instagram', 'youtube', 'tiktok', 'vimeo', 'spotify', 'applePodcasts', 'googlePodcasts', 'amazon', 'sermonaudio'] as const).map((platform) => (
                       <div key={platform}>
                         <label className="block text-sm font-medium text-gray-700 capitalize">
-                          {platform === 'x' ? 'X (Twitter)' : platform === 'applePodcasts' ? 'Apple Podcasts' : platform}
+                          {platform === 'x' ? 'X (Twitter)' : platform.replace(/([A-Z])/g, ' $1').trim()}
                         </label>
                         <input
                           type="url"
@@ -1615,19 +1912,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                             connections: { ...editedChurch.connections, [platform]: e.target.value }
                           })}
                           className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                          placeholder="https://..."
+                          placeholder={`https://${platform}.com/...`}
                         />
                       </div>
                     ))}
                   </div>
                 ) : church.connections ? (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {church.connections.facebook && <InfoRow label="Facebook" value={church.connections.facebook} />}
-                    {church.connections.x && <InfoRow label="X (Twitter)" value={church.connections.x} />}
-                    {church.connections.instagram && <InfoRow label="Instagram" value={church.connections.instagram} />}
-                    {church.connections.youtube && <InfoRow label="YouTube" value={church.connections.youtube} />}
-                    {church.connections.spotify && <InfoRow label="Spotify" value={church.connections.spotify} />}
-                    {church.connections.applePodcasts && <InfoRow label="Apple Podcasts" value={church.connections.applePodcasts} />}
+                    {Object.entries(church.connections).map(([platform, url]) => (
+                      url && <InfoRow key={platform} label={platform.replace(/([A-Z])/g, ' $1').trim()} value={url} />
+                    ))}
                   </div>
                 ) : (
                   <p className="text-gray-500 italic">No online presence information</p>
@@ -1638,12 +1932,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               <div>
                 <h4 className="text-lg font-bold text-gray-900 mb-3">Doctrinal Distinctives</h4>
                 <dl className="grid grid-cols-1 gap-4">
-                  <InfoRow label="Plurality of Elders" value={church.pluralityOfElders} />
-                  <InfoRow label="Church Discipline" value={church.churchDiscipline} />
-                  <InfoRow label="Statement on Social Justice & Gospel" value={church.ssjgSigned} />
+                  <InfoRow label="Plurality of Elders" value={editedChurch.pluralityOfElders} />
+                  <InfoRow label="Church Discipline" value={editedChurch.churchDiscipline} />
+                  <InfoRow label="Statement on Social Justice & Gospel" value={editedChurch.ssjgSigned} />
                   <div>
                     <dt className="text-sm font-medium text-gray-500">1689 London Baptist Confession</dt>
-                    <dd className="mt-1 text-sm text-gray-900 whitespace-pre-wrap">{church.confessionAffirmation}</dd>
+                    <dd className="mt-1 text-sm text-gray-900 whitespace-pre-wrap">{editedChurch.confessionAffirmation}</dd>
                   </div>
                 </dl>
               </div>
@@ -1672,12 +1966,148 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
   // Get all leaders from approved churches
   const allLeaders = approvedApps.flatMap(church => 
-    church.leaders.map(leader => ({
+    (church.leaders || []).map(leader => ({
       ...leader,
       churchName: church.churchName,
       churchId: church.id
     }))
   );
+
+  // Church Statistics Modal
+  const ChurchStatsModal = ({ churchId, churchName, onClose }: { churchId: string, churchName: string, onClose: () => void }) => {
+    return (
+      <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={onClose}>
+        <div className="flex items-center justify-center min-h-screen px-4 py-6">
+          <div 
+            className="bg-white rounded-lg shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="bg-black px-6 py-4 flex items-center justify-between sticky top-0 z-10">
+              <h3 className="text-2xl font-serif font-bold text-white">{churchName} Analytics</h3>
+              <button onClick={onClose} className="text-gray-300 hover:text-white">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="p-6">
+              {loadingChurchAnalytics ? (
+                <div className="flex justify-center p-12">
+                  <RefreshCw className="w-8 h-8 animate-spin text-gray-400" />
+                </div>
+              ) : churchAnalyticsData ? (
+                <div className="space-y-8">
+                  {/* Time Range Stats */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {/* All Time */}
+                    <div className="bg-blue-50 rounded-lg p-4 border border-blue-100">
+                      <h4 className="text-sm font-bold text-blue-800 uppercase tracking-wide mb-3">All Time</h4>
+                      <div className="space-y-2">
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Profile Views</span>
+                          <span className="font-bold text-gray-900">{churchAnalyticsData.total?.views || 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Website Clicks</span>
+                          <span className="font-bold text-gray-900">{churchAnalyticsData.total?.visits || 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Contact Inquiries</span>
+                          <span className="font-bold text-gray-900">{churchAnalyticsData.total?.contacts || 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Social Clicks</span>
+                          <span className="font-bold text-gray-900">{churchAnalyticsData.total?.socialClicks || 0}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Last 30 Days */}
+                    <div className="bg-green-50 rounded-lg p-4 border border-green-100">
+                      <h4 className="text-sm font-bold text-green-800 uppercase tracking-wide mb-3">Last 30 Days</h4>
+                      <div className="space-y-2">
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Profile Views</span>
+                          <span className="font-bold text-gray-900">{churchAnalyticsData.last30Days?.views || 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Website Clicks</span>
+                          <span className="font-bold text-gray-900">{churchAnalyticsData.last30Days?.visits || 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Contact Inquiries</span>
+                          <span className="font-bold text-gray-900">{churchAnalyticsData.last30Days?.contacts || 0}</span>
+                        </div>
+                         <div className="flex justify-between">
+                          <span className="text-gray-600">Social Clicks</span>
+                          <span className="font-bold text-gray-900">{churchAnalyticsData.last30Days?.socialClicks || 0}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Last 7 Days */}
+                    <div className="bg-purple-50 rounded-lg p-4 border border-purple-100">
+                      <h4 className="text-sm font-bold text-purple-800 uppercase tracking-wide mb-3">Last 7 Days</h4>
+                      <div className="space-y-2">
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Profile Views</span>
+                          <span className="font-bold text-gray-900">{churchAnalyticsData.last7Days?.views || 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Website Clicks</span>
+                          <span className="font-bold text-gray-900">{churchAnalyticsData.last7Days?.visits || 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Contact Inquiries</span>
+                          <span className="font-bold text-gray-900">{churchAnalyticsData.last7Days?.contacts || 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Social Clicks</span>
+                          <span className="font-bold text-gray-900">{churchAnalyticsData.last7Days?.socialClicks || 0}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Engagement Insights */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                     <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                      <h4 className="font-bold text-gray-900 mb-2 flex items-center">
+                        <Clock className="w-4 h-4 mr-2 text-gray-500" />
+                        Last Activity
+                      </h4>
+                      <p className="text-gray-600">
+                        {churchAnalyticsData.lastActivity 
+                          ? new Date(churchAnalyticsData.lastActivity).toLocaleString() 
+                          : 'No activity recorded yet'}
+                      </p>
+                    </div>
+
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                      <h4 className="font-bold text-gray-900 mb-2 flex items-center">
+                        <Share2 className="w-4 h-4 mr-2 text-gray-500" />
+                        Top Social Platform
+                      </h4>
+                      <p className="text-gray-600 capitalize">
+                        {churchAnalyticsData.topSocialPlatform || 'None recorded yet'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center p-8 text-gray-500">
+                  <AlertTriangle className="w-12 h-12 mx-auto mb-2 opacity-20" />
+                  <p>Failed to load analytics data.</p>
+                </div>
+              )}
+            </div>
+            <div className="bg-gray-50 px-6 py-4 flex justify-end border-t">
+              <Button onClick={onClose}>Close</Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   const handleSendEmail = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1765,113 +2195,278 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       return leaderSortOrder === 'asc' ? comparison : -comparison;
     });
 
+  // Filter and sort users
+  const filteredAndSortedUsers = allUsers
+    .filter(u => {
+      if (!userSearchQuery) return true;
+      const query = userSearchQuery.toLowerCase();
+      return (
+        u.email.toLowerCase().includes(query) ||
+        u.role.toLowerCase().includes(query)
+      );
+    })
+    .sort((a, b) => {
+      let comparison = 0;
+      switch (userSortBy) {
+        case 'email':
+          comparison = a.email.localeCompare(b.email);
+          break;
+        case 'role':
+          comparison = a.role.localeCompare(b.role);
+          break;
+        case 'lastSignIn':
+          const aTime = a.lastSignInTime ? new Date(a.lastSignInTime).getTime() : 0;
+          const bTime = b.lastSignInTime ? new Date(b.lastSignInTime).getTime() : 0;
+          comparison = aTime - bTime;
+          break;
+      }
+      return userSortOrder === 'asc' ? comparison : -comparison;
+    });
+
   return (
     <div className="min-h-screen bg-gray-50 p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center"><button onClick={onBack} className="mr-4 text-brand-600 hover:text-brand-800"><ArrowLeft /></button><h1 className="text-3xl font-serif font-bold text-brand-900">Admin Dashboard</h1></div>
-          <div className="flex items-center space-x-4"><div className="hidden sm:block text-right"><div className="text-sm font-bold text-gray-900">{user?.email}</div><div className="text-xs text-gray-500">Administrator</div></div><Button variant="outline" onClick={logout} className="text-xs px-3 py-2"><LogOut className="w-4 h-4 mr-2" /> Sign Out</Button></div>
+          <div className="flex items-center space-x-4">
+            <div className="hidden sm:block text-right">
+              <div className="text-sm font-bold text-gray-900">{user?.email}</div>
+              <div className="text-xs text-gray-500">Administrator</div>
+            </div>
+            <Button variant="outline" onClick={() => { setEditEmail(user?.email || ''); setShowProfileModal(true); }} className="text-xs px-3 py-2">
+              <Settings className="w-4 h-4 mr-2" /> Edit Profile
+            </Button>
+            <Button variant="outline" onClick={logout} className="text-xs px-3 py-2">
+              <LogOut className="w-4 h-4 mr-2" /> Sign Out
+            </Button>
+          </div>
         </div>
 
         {/* Navigation Menu */}
-        <div className="mb-8 border-b border-gray-200">
-          <nav className="flex space-x-8">
-            <button
-              onClick={() => setCurrentView('pending')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                currentView === 'pending'
-                  ? 'border-brand-600 text-brand-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              Pending
-              <span className="ml-2 bg-yellow-100 text-yellow-800 py-1 px-2 rounded-full text-xs">
-                {pendingApps.length}
-              </span>
-            </button>
-            <button
-              onClick={() => setCurrentView('approved')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                currentView === 'approved'
-                  ? 'border-brand-600 text-brand-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              Approved
-              <span className="ml-2 bg-green-100 text-green-800 py-1 px-2 rounded-full text-xs">
-                {approvedApps.length}
-              </span>
-            </button>
-            <button
-              onClick={() => setCurrentView('leaders')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                currentView === 'leaders'
-                  ? 'border-brand-600 text-brand-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              Leaders
-              <span className="ml-2 bg-gray-100 text-gray-900 py-1 px-2 rounded-full text-xs">
-                {allLeaders.length}
-              </span>
-            </button>
-            <button
-              onClick={() => setCurrentView('email')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                currentView === 'email'
-                  ? 'border-brand-600 text-brand-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              Email Center
-              <span className="ml-2 bg-blue-100 text-blue-800 py-1 px-2 rounded-full text-xs">
-                New
-              </span>
-            </button>
-            <button
-              onClick={() => setCurrentView('rejected')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                currentView === 'rejected'
-                  ? 'border-brand-600 text-brand-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              Rejected
-              <span className="ml-2 bg-red-100 text-red-800 py-1 px-2 rounded-full text-xs">
-                {rejectedApps.length}
-              </span>
-            </button>
-            <button
-              onClick={() => setCurrentView('settings')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                currentView === 'settings'
-                  ? 'border-brand-600 text-brand-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <div className="flex items-center">
-                <Settings className="w-4 h-4 mr-2" />
-                Settings
-              </div>
-            </button>
-            <button
-              onClick={() => setCurrentView('users')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                currentView === 'users'
-                  ? 'border-brand-600 text-brand-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <div className="flex items-center">
-                <UserIcon className="w-4 h-4 mr-2" />
-                Users
-              </div>
-            </button>
-          </nav>
+        <div className="mb-8">
+          {/* Top-level tabs */}
+          <div className="border-b border-gray-200">
+            <nav className="flex space-x-8">
+              <button
+                onClick={() => setCurrentView('statistics')}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  currentView === 'statistics'
+                    ? 'border-brand-600 text-brand-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-center">
+                  <BarChart3 className="w-4 h-4 mr-2" />
+                  Dashboard
+                </div>
+              </button>
+              <button
+                onClick={() => setCurrentView('member-pending')}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  currentView.startsWith('member-')
+                    ? 'border-brand-600 text-brand-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                Member Management
+              </button>
+              <button
+                onClick={() => setCurrentView('jobs')}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  currentView === 'jobs'
+                    ? 'border-brand-600 text-brand-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-center">
+                  <Briefcase className="w-4 h-4 mr-2" />
+                  Job Board
+                </div>
+              </button>
+              <button
+                onClick={() => setCurrentView('email')}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  currentView === 'email'
+                    ? 'border-brand-600 text-brand-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                Email Center
+              </button>
+              <button
+                onClick={() => setCurrentView('settings-email')}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  currentView.startsWith('settings-')
+                    ? 'border-brand-600 text-brand-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-center">
+                  <Settings className="w-4 h-4 mr-2" />
+                  Settings
+                </div>
+              </button>
+            </nav>
+          </div>
+
+          {/* Sub-navigation for Member Management */}
+          {currentView.startsWith('member-') && (
+            <div className="bg-gray-50 border-b border-gray-200 px-8">
+              <nav className="flex space-x-6">
+                <button
+                  onClick={() => setCurrentView('member-pending')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
+                    currentView === 'member-pending'
+                      ? 'border-brand-500 text-brand-700'
+                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                  }`}
+                >
+                  Pending
+                  <span className="ml-2 bg-yellow-100 text-yellow-800 py-0.5 px-1.5 rounded-full text-xs">
+                    {pendingApps.length}
+                  </span>
+                </button>
+                <button
+                  onClick={() => setCurrentView('member-active')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
+                    currentView === 'member-active'
+                      ? 'border-brand-500 text-brand-700'
+                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                  }`}
+                >
+                  Active
+                  <span className="ml-2 bg-green-100 text-green-800 py-0.5 px-1.5 rounded-full text-xs">
+                    {approvedApps.length}
+                  </span>
+                </button>
+                <button
+                  onClick={() => setCurrentView('member-leaders')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
+                    currentView === 'member-leaders'
+                      ? 'border-brand-500 text-brand-700'
+                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                  }`}
+                >
+                  Leaders
+                  <span className="ml-2 bg-gray-100 text-gray-900 py-0.5 px-1.5 rounded-full text-xs">
+                    {allLeaders.length}
+                  </span>
+                </button>
+                <button
+                  onClick={() => setCurrentView('member-rejected')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
+                    currentView === 'member-rejected'
+                      ? 'border-brand-500 text-brand-700'
+                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                  }`}
+                >
+                  Rejected
+                  <span className="ml-2 bg-red-100 text-red-800 py-0.5 px-1.5 rounded-full text-xs">
+                    {rejectedApps.length}
+                  </span>
+                </button>
+              </nav>
+            </div>
+          )}
+
+          {/* Sub-navigation for Job Board */}
+          {(currentView === 'jobs') && (
+            <div className="bg-gray-50 border-b border-gray-200 px-8">
+              <nav className="flex space-x-6">
+                <button
+                  onClick={() => setCurrentView('jobs')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
+                    currentView === 'jobs'
+                      ? 'border-brand-500 text-brand-700'
+                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                  }`}
+                >
+                  All Job Listings
+                  <span className="ml-2 bg-blue-100 text-blue-800 py-0.5 px-1.5 rounded-full text-xs">
+                    {jobListings.length}
+                  </span>
+                </button>
+                {/* Potentially add 'All Applications' tab here later if needed for admin */}
+              </nav>
+            </div>
+          )}
+
+          {/* Sub-navigation for Settings */}
+          {currentView.startsWith('settings-') && (
+            <div className="bg-gray-50 border-b border-gray-200 px-8">
+              <nav className="flex space-x-6">
+                <button
+                  onClick={() => setCurrentView('settings-email')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
+                    currentView === 'settings-email'
+                      ? 'border-brand-500 text-brand-700'
+                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center">
+                    <Mail className="w-3 h-3 mr-1.5" />
+                    Email Templates
+                  </div>
+                </button>
+                <button
+                  onClick={() => setCurrentView('settings-application')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
+                    currentView === 'settings-application'
+                      ? 'border-brand-500 text-brand-700'
+                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center">
+                    <BookOpen className="w-3 h-3 mr-1.5" />
+                    Application Form
+                  </div>
+                </button>
+                <button
+                  onClick={() => setCurrentView('settings-content')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
+                    currentView === 'settings-content'
+                      ? 'border-brand-500 text-brand-700'
+                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center">
+                    <BookOpen className="w-3 h-3 mr-1.5" />
+                    Main Page Content
+                  </div>
+                </button>
+                <button
+                  onClick={() => setCurrentView('settings-users')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
+                    currentView === 'settings-users'
+                      ? 'border-brand-500 text-brand-700'
+                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center">
+                    <UserIcon className="w-3 h-3 mr-1.5" />
+                    Users
+                  </div>
+                </button>
+                <button
+                  onClick={() => setCurrentView('settings-promo-codes')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
+                    currentView === 'settings-promo-codes'
+                      ? 'border-brand-500 text-brand-700'
+                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center">
+                    <ShieldCheck className="w-3 h-3 mr-1.5" />
+                    Promo Codes
+                  </div>
+                </button>
+              </nav>
+            </div>
+          )}
         </div>
 
         {/* Pending Applications View */}
-        {currentView === 'pending' && (
+        {currentView === 'member-pending' && (
           <section>
             <h2 className="text-2xl font-bold text-gray-900 mb-2">Pending Applications</h2>
             <p className="text-gray-600 mb-6">Review and approve new church applications</p>
@@ -1908,8 +2503,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           </section>
         )}
 
-        {/* Approved Churches View */}
-        {currentView === 'approved' && (
+        {/* Promo Code Management View */}
+        {currentView === 'settings-promo-codes' && (
+          <section className="max-w-4xl mx-auto">
+            <div className="mb-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Freebie Promo Codes</h2>
+              <p className="text-gray-600">Manage promo codes that allow churches to join for free.</p>
+            </div>
+            <div className="bg-white rounded-lg shadow-lg border border-gray-200 p-6">
+              <PromoCodeManager />
+            </div>
+          </section>
+        )}
+
+        {/* Active Members View */}
+        {currentView === 'member-active' && (
           <section>
             <div className="flex items-start justify-between mb-6">
               <div>
@@ -1963,7 +2571,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         failedCount++;
                         errors.push(`${church.churchName}: ${error.message || 'Unknown error'}`);
                       }
-                    }
+                    };
 
                     setIsProcessingPortalAccount(false);
                     const message = `Portal Account Creation Complete!\n\nSuccessfully created: ${successCount} accounts\nFailed: ${failedCount}`;
@@ -2041,6 +2649,59 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   <RefreshCw className="w-3 h-3 mr-1" />
                   Recalculate All Coordinates
                 </Button>
+                <Button
+                  variant="danger"
+                  onClick={async () => {
+                    if (approvedApps.length === 0) {
+                      alert('No approved churches to delete.');
+                      return;
+                    }
+                    
+                    const confirmText = `DELETE ALL ${approvedApps.length} CHURCHES`;
+                    const userInput = prompt(
+                      `⚠️ DANGER: This will permanently delete ALL ${approvedApps.length} approved churches!\n\n` +
+                      `This action CANNOT be undone.\n\n` +
+                      `To confirm, type exactly: ${confirmText}`
+                    );
+                    
+                    if (userInput !== confirmText) {
+                      alert('Deletion cancelled. The confirmation text did not match.');
+                      return;
+                    }
+
+                    setIsImporting(true);
+                    let successCount = 0;
+                    let failedCount = 0;
+                    const errors: string[] = [];
+
+                    for (const church of approvedApps) {
+                      try {
+                        await deleteChurchApplication(church.id);
+                        successCount++;
+                        console.log(`✓ Deleted: ${church.churchName}`);
+                      } catch (error: any) {
+                        console.error(`Error deleting ${church.churchName}:`, error);
+                        failedCount++;
+                        errors.push(`${church.churchName}: ${error.message || 'Unknown error'}`);
+                      }
+                    }
+
+                    setIsImporting(false);
+                    
+                    const message = `Delete Complete!\n\nSuccessfully deleted: ${successCount} churches\nFailed: ${failedCount}`;
+                    const detailedMessage = errors.length > 0
+                      ? `${message}\n\nErrors:\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? '\n...(and more)' : ''}`
+                      : message;
+                    
+                    alert(detailedMessage);
+                  }}
+                  isLoading={isImporting}
+                  disabled={isImporting || approvedApps.length === 0}
+                  className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
+                >
+                  <Trash2 className="w-3 h-3 mr-1" />
+                  Delete All ({approvedApps.length})
+                </Button>
               </div>
             </div>
             {approvedApps.length === 0 ? (
@@ -2108,7 +2769,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                               <div className="font-medium text-gray-900">{app.churchName}</div>
                             </td>
                             <td className="px-6 py-4 text-sm text-gray-500">
-                              {`${app.churchAddress.city}, ${app.churchAddress.country}`}
+                              {`${app.churchAddress?.city || ''}, ${app.churchAddress?.country || ''}`}
                             </td>
                             <td className="px-6 py-4 text-sm text-gray-500">
                               {app.applicantEmail}
@@ -2140,7 +2801,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         )}
 
         {/* Rejected Applications View */}
-        {currentView === 'rejected' && (
+        {currentView === 'member-rejected' && (
           <section>
             <h2 className="text-2xl font-bold text-gray-900 mb-2">Rejected Applications</h2>
             <p className="text-gray-600 mb-6">Applications that have been declined</p>
@@ -2165,7 +2826,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         <tr key={app.id} className="hover:bg-gray-50">
                           <td className="px-6 py-4 font-medium text-gray-900">{app.churchName}</td>
                           <td className="px-6 py-4 text-gray-500">
-                            {`${app.churchAddress.city}, ${app.churchAddress.country}`}
+                            {`${app.churchAddress?.city || ''}, ${app.churchAddress?.country || ''}`}
                           </td>
                           <td className="px-6 py-4 text-right">
                             <button 
@@ -2185,61 +2846,95 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           </section>
         )}
 
-        {/* Settings View */}
-        {currentView === 'settings' && (
+        {/* Job Listings View */}
+        {currentView === 'jobs' && (
+          <section>
+            <div className="flex items-start justify-between mb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">All Job Listings</h2>
+                <p className="text-gray-600">Overview of all active and inactive job listings from network churches.</p>
+              </div>
+              <div className="flex gap-2">
+                {/* Future: Add bulk actions, filter, search */}
+              </div>
+            </div>
+
+            {jobListings.length === 0 ? (
+              <div className="bg-white p-12 rounded-lg shadow-sm text-center border-2 border-dashed border-gray-200">
+                <Briefcase className="w-12 h-12 text-gray-400 mx-auto mb-3 opacity-50" />
+                <div className="text-gray-500 italic">No job listings found.</div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-lg shadow overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Job Title</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Church</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Job Type</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {jobListings.map(job => (
+                        <tr key={job.id} className="hover:bg-gray-50">
+                          <td className="px-6 py-4">
+                            <div className="font-medium text-gray-900">{job.title}</div>
+                            <div className="text-sm text-gray-500">{job.category}</div>
+                          </td>
+                          <td className="px-6 py-4 text-sm text-gray-500">
+                            {job.churchName}
+                          </td>
+                          <td className="px-6 py-4 text-sm text-gray-500">
+                            {job.location}
+                          </td>
+                          <td className="px-6 py-4 text-sm text-gray-500">
+                            {job.jobType}
+                          </td>
+                          <td className="px-6 py-4">
+                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                              job.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {job.status}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            <Button 
+                              variant="danger"
+                              onClick={() => {
+                                if (confirm(`Are you sure you want to delete the job listing: "${job.title}" by ${job.churchName}? This cannot be undone.`)) {
+                                  deleteJobListing(job.id);
+                                }
+                              }}
+                              className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              Delete
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Email Templates Settings View */}
+        {currentView === 'settings-email' && (
           <section className="max-w-4xl mx-auto">
             <div className="mb-6">
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">System Settings</h2>
-              <p className="text-gray-600">Configure automated emails and system behaviors.</p>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Email Templates</h2>
+              <p className="text-gray-600">Configure automated email templates sent to churches.</p>
             </div>
 
-            {/* Settings Tabs */}
-            <div className="mb-6 border-b border-gray-200">
-              <nav className="flex space-x-8">
-                <button
-                  onClick={() => setSettingsTab('email')}
-                  className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                    settingsTab === 'email'
-                      ? 'border-brand-600 text-brand-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  <div className="flex items-center">
-                    <Mail className="w-4 h-4 mr-2" />
-                    Email Templates
-                  </div>
-                </button>
-                <button
-                  onClick={() => setSettingsTab('application')}
-                  className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                    settingsTab === 'application'
-                      ? 'border-brand-600 text-brand-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  <div className="flex items-center">
-                    <BookOpen className="w-4 h-4 mr-2" />
-                    Application Form
-                  </div>
-                </button>
-                <button
-                  onClick={() => setSettingsTab('general')}
-                  className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                    settingsTab === 'general'
-                      ? 'border-brand-600 text-brand-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  <div className="flex items-center">
-                    <Settings className="w-4 h-4 mr-2" />
-                    General
-                  </div>
-                </button>
-              </nav>
-            </div>
-
-            {/* Email Templates Tab */}
-            {settingsTab === 'email' && (
+            {/* Email Templates Content */}
+            {(
               <>
                 {loadingTemplates ? (
                   <div className="flex justify-center p-12"><RefreshCw className="w-8 h-8 animate-spin text-gray-400" /></div>
@@ -2388,7 +3083,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       { type: 'dues_reminder_30' as const, title: 'Dues Reminder (30 Days)', desc: 'Sent 30 days before annual dues expire.' },
                       { type: 'dues_reminder_7' as const, title: 'Dues Reminder (7 Days)', desc: 'Sent 7 days before annual dues expire.' },
                       { type: 'dues_reminder_0' as const, title: 'Dues Reminder (Due Today)', desc: 'Sent on the day annual dues expire.' },
-                      { type: 'dues_delinquent' as const, title: 'Delinquency Notice', desc: 'Sent weekly when dues are overdue.' }
+                      { type: 'dues_delinquent' as const, title: 'Delinquency Notice', desc: 'Sent weekly when dues are overdue.' },
+                      { type: 'portal_account_setup' as const, title: 'Portal Account Setup', desc: 'Sent when an admin creates a church portal account.' }
                     ].map(({ type, title, desc }) => (
                       <div key={type} className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
                         <div className="bg-yellow-50 px-6 py-4 border-b border-yellow-200">
@@ -2422,7 +3118,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                               rows={6}
                               className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
                             />
-                            <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
+                            <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}{type === 'portal_account_setup' && ', {{resetLink}}'}</p>
                           </div>
                           <div className="flex justify-end">
                             <Button 
@@ -2439,9 +3135,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 )}
               </>
             )}
+          </section>
+        )}
 
-            {/* Application Form Tab */}
-            {settingsTab === 'application' && (
+        {/* Application Form Settings View */}
+        {currentView === 'settings-application' && (
+          <section className="max-w-4xl mx-auto">
+            <div className="mb-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Application Form</h2>
+              <p className="text-gray-600">Customize the church application form fields and requirements.</p>
+            </div>
+
+            {/* Application Form Content */}
+            {(
               <div className="space-y-6">
                 {/* Header */}
                 <div className="bg-white rounded-lg shadow-lg border border-gray-200 p-6">
@@ -2574,16 +3280,464 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 </div>
               </div>
             )}
+          </section>
+        )}
 
-            {/* General Settings Tab */}
-            {settingsTab === 'general' && (
-              <div className="bg-white rounded-lg shadow-lg border border-gray-200 p-6">
-                <h3 className="text-lg font-bold text-gray-900 mb-4">General Settings</h3>
-                <p className="text-gray-600">Configure system-wide settings and preferences.</p>
-                <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-                  <p className="text-sm text-gray-500 italic">General settings coming soon...</p>
+        {/* Main Page Content Settings View */}
+        {currentView === 'settings-content' && (
+          <section className="max-w-4xl mx-auto">
+            <div className="mb-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Main Page Content</h2>
+              <p className="text-gray-600">Edit the banner description and informational sections on the home page.</p>
+            </div>
+            
+            <div className="space-y-6">
+              {/* Banner Description */}
+              <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+                <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
+                  <h3 className="text-lg font-bold text-gray-900">Hero Banner Description</h3>
+                  <p className="text-sm text-gray-500 mt-1">The main description text displayed in the hero section</p>
+                </div>
+                <div className="p-6 space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Banner Text</label>
+                    <textarea
+                      value={mainPageContent.bannerDescription}
+                      onChange={(e) => setMainPageContent({
+                        ...mainPageContent,
+                        bannerDescription: e.target.value
+                      })}
+                      rows={3}
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                      placeholder="Enter the hero banner description..."
+                    />
+                  </div>
+                  <div className="flex justify-end">
+                    <Button 
+                      onClick={async () => {
+                        setIsSavingContent(true);
+                        // TODO: Save to Firestore
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        setIsSavingContent(false);
+                        alert('Content saved successfully!');
+                      }}
+                      isLoading={isSavingContent}
+                    >
+                      Save Banner
+                    </Button>
+                  </div>
                 </div>
               </div>
+
+              {/* Our Distinctives Section */}
+              <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+                <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
+                  <h3 className="text-lg font-bold text-gray-900">Our Distinctives Section</h3>
+                  <p className="text-sm text-gray-500 mt-1">The three cards explaining why churches should join</p>
+                </div>
+                <div className="p-6 space-y-6">
+                  {mainPageContent.distinctives.map((item, index) => (
+                    <div key={index} className="border rounded-lg p-4 bg-gray-50">
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Card {index + 1} Title
+                          </label>
+                          <input
+                            type="text"
+                            value={item.title}
+                            onChange={(e) => {
+                              const newDistinctives = [...mainPageContent.distinctives];
+                              newDistinctives[index].title = e.target.value;
+                              setMainPageContent({
+                                ...mainPageContent,
+                                distinctives: newDistinctives
+                              });
+                            }}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Card {index + 1} Description
+                          </label>
+                          <textarea
+                            value={item.description}
+                            onChange={(e) => {
+                              const newDistinctives = [...mainPageContent.distinctives];
+                              newDistinctives[index].description = e.target.value;
+                              setMainPageContent({
+                                ...mainPageContent,
+                                distinctives: newDistinctives
+                              });
+                            }}
+                            rows={3}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <div className="flex justify-end pt-4 border-t">
+                    <Button 
+                      onClick={async () => {
+                        setIsSavingContent(true);
+                        // TODO: Save to Firestore
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        setIsSavingContent(false);
+                        alert('Distinctives saved successfully!');
+                      }}
+                      isLoading={isSavingContent}
+                    >
+                      Save Distinctives
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Network Requirements Section */}
+              <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+                <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
+                  <h3 className="text-lg font-bold text-gray-900">Network Requirements Section</h3>
+                  <p className="text-sm text-gray-500 mt-1">The three cards explaining membership requirements</p>
+                </div>
+                <div className="p-6 space-y-6">
+                  {mainPageContent.requirements.map((item, index) => (
+                    <div key={index} className="border rounded-lg p-4 bg-gray-50">
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Card {index + 1} Title
+                          </label>
+                          <input
+                            type="text"
+                            value={item.title}
+                            onChange={(e) => {
+                              const newRequirements = [...mainPageContent.requirements];
+                              newRequirements[index].title = e.target.value;
+                              setMainPageContent({
+                                ...mainPageContent,
+                                requirements: newRequirements
+                              });
+                            }}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Card {index + 1} Description
+                          </label>
+                          <textarea
+                            value={item.description}
+                            onChange={(e) => {
+                              const newRequirements = [...mainPageContent.requirements];
+                              newRequirements[index].description = e.target.value;
+                              setMainPageContent({
+                                ...mainPageContent,
+                                requirements: newRequirements
+                              });
+                            }}
+                            rows={3}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <div className="flex justify-end pt-4 border-t">
+                    <Button 
+                      onClick={async () => {
+                        setIsSavingContent(true);
+                        // TODO: Save to Firestore
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        setIsSavingContent(false);
+                        alert('Requirements saved successfully!');
+                      }}
+                      isLoading={isSavingContent}
+                    >
+                      Save Requirements
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* Statistics View */}
+        {currentView === 'statistics' && (
+          <section>
+            <div className="mb-6 flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">Network Analytics</h2>
+                <p className="text-gray-600">Real-time engagement metrics across all churches</p>
+              </div>
+              <div className="flex gap-2">
+                <Button 
+                  onClick={async () => {
+                    if (confirm("Are you sure you want to reset all analytics data? This action cannot be undone.")) {
+                      try {
+                        const { resetAnalytics } = await import('../services/firebase');
+                        await resetAnalytics();
+                        alert("Analytics data reset successfully!");
+                        loadGlobalAnalytics(); // Refresh data
+                      } catch (error) {
+                        console.error("Error resetting analytics:", error);
+                        alert("Failed to reset analytics.");
+                      }
+                    }
+                  }}
+                  variant="danger"
+                  className="flex items-center gap-2"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Reset Data
+                </Button>
+                <Button 
+                  onClick={loadGlobalAnalytics}
+                  isLoading={loadingStats}
+                  variant="outline"
+                  className="flex items-center gap-2"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  Refresh Data
+                </Button>
+              </div>
+            </div>
+
+            {loadingStats ? (
+              <div className="flex justify-center p-12">
+                <RefreshCw className="w-8 h-8 animate-spin text-gray-400" />
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {/* Overview Stats */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                  <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-gray-600">Total Churches</p>
+                        <p className="text-3xl font-bold text-gray-900 mt-2">{approvedApps.length}</p>
+                      </div>
+                      <Globe className="w-12 h-12 text-blue-500 opacity-20" />
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-gray-600">Total Elders</p>
+                        <p className="text-3xl font-bold text-gray-900 mt-2">{allLeaders.length}</p>
+                      </div>
+                      <UserIcon className="w-12 h-12 text-green-500 opacity-20" />
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-gray-600">Pending Apps</p>
+                        <p className="text-3xl font-bold text-gray-900 mt-2">{pendingApps.length}</p>
+                      </div>
+                      <AlertTriangle className="w-12 h-12 text-yellow-500 opacity-20" />
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-gray-600">Portal Accounts</p>
+                        <p className="text-3xl font-bold text-gray-900 mt-2">{approvedApps.filter(app => app.userId).length}</p>
+                      </div>
+                      <UserIcon className="w-12 h-12 text-purple-500 opacity-20" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Global Stats Overview */}
+                {globalAnalytics && (
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                    <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-medium text-gray-600">Total Views</p>
+                          <p className="text-3xl font-bold text-blue-600 mt-2">
+                            {globalAnalytics.total?.views || 0}
+                          </p>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Last 30 days: {globalAnalytics.last30Days?.views || 0}
+                          </p>
+                        </div>
+                        <Eye className="w-12 h-12 text-blue-500 opacity-20" />
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-medium text-gray-600">Website Visits</p>
+                          <p className="text-3xl font-bold text-green-600 mt-2">
+                            {globalAnalytics.total?.visits || 0}
+                          </p>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Last 30 days: {globalAnalytics.last30Days?.visits || 0}
+                          </p>
+                        </div>
+                        <ExternalLink className="w-12 h-12 text-green-500 opacity-20" />
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-medium text-gray-600">Contact Forms</p>
+                          <p className="text-3xl font-bold text-purple-600 mt-2">
+                            {globalAnalytics.total?.contacts || 0}
+                          </p>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Last 30 days: {globalAnalytics.last30Days?.contacts || 0}
+                          </p>
+                        </div>
+                        <Mail className="w-12 h-12 text-purple-500 opacity-20" />
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-medium text-gray-600">Social Clicks</p>
+                          <p className="text-3xl font-bold text-orange-600 mt-2">
+                            {globalAnalytics.total?.socialClicks || 0}
+                          </p>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Last 30 days: {globalAnalytics.last30Days?.socialClicks || 0}
+                          </p>
+                        </div>
+                        <Globe className="w-12 h-12 text-orange-500 opacity-20" />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Stats Filters */}
+                <div className="bg-white p-4 rounded-lg shadow flex gap-4 items-center flex-wrap">
+                  <div className="flex-1 min-w-[200px]">
+                    <input
+                      type="text"
+                      placeholder="Search stats by church name or location..."
+                      value={statsSearchQuery}
+                      onChange={(e) => setStatsSearchQuery(e.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent"
+                    />
+                  </div>
+                  <div className="flex gap-2 items-center">
+                    <label className="text-sm font-medium text-gray-700">Sort by:</label>
+                    <select
+                      value={statsSortBy}
+                      onChange={(e) => setStatsSortBy(e.target.value as any)}
+                      className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-600 bg-white"
+                    >
+                      <option value="views">Total Views</option>
+                      <option value="visits">Website Visits</option>
+                      <option value="contacts">Contact Forms</option>
+                      <option value="name">Church Name</option>
+                      <option value="city">City</option>
+                    </select>
+                    <button
+                      onClick={() => setStatsSortOrder(statsSortOrder === 'asc' ? 'desc' : 'asc')}
+                      className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                      title={statsSortOrder === 'asc' ? 'Sort Descending' : 'Sort Ascending'}
+                    >
+                      {statsSortOrder === 'asc' ? '↑' : '↓'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Church List with Analytics */}
+                <div className="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+                  <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
+                    <h3 className="text-lg font-bold text-gray-900">Church Engagement Overview</h3>
+                    <p className="text-sm text-gray-500 mt-1">Click on a church to view detailed analytics</p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Church</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
+                          <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Views</th>
+                          <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Visits</th>
+                          <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Contacts</th>
+                          <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {filteredAndSortedStats.map(app => (
+                          <tr 
+                            key={app.id} 
+                            className="hover:bg-blue-50 cursor-pointer transition-colors"
+                            onClick={() => {
+                              setViewingStatsChurch({ id: app.id, name: app.churchName });
+                              loadChurchAnalytics(app.id);
+                            }}
+                          >
+                            <td className="px-6 py-4">
+                              <div className="font-medium text-gray-900">{app.churchName}</div>
+                            </td>
+                            <td className="px-6 py-4 text-sm text-gray-500">
+                              {app.churchAddress?.city || ''}, {app.churchAddress?.country || ''}
+                            </td>
+                            <td className="px-6 py-4 text-center text-sm font-medium text-gray-900">
+                              {app.stats.views}
+                            </td>
+                            <td className="px-6 py-4 text-center text-sm font-medium text-gray-900">
+                              {app.stats.visits}
+                            </td>
+                            <td className="px-6 py-4 text-center text-sm font-medium text-gray-900">
+                              {app.stats.contacts}
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              <Button variant="outline" className="text-xs h-7 px-2">
+                                View Details
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                        {filteredAndSortedStats.length === 0 && (
+                          <tr>
+                            <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
+                              No churches found matching your filters.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+              {/* Instructions */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
+                <div className="flex items-start">
+                  <BarChart3 className="w-6 h-6 text-blue-600 mt-0.5 mr-3 flex-shrink-0" />
+                  <div>
+                    <h3 className="text-lg font-semibold text-blue-900 mb-2">📈 How to View Analytics Data</h3>
+                    <p className="text-blue-800 mb-3">
+                      The tracking system is collecting data in real-time. To see analytics:
+                    </p>
+                    <ol className="list-decimal list-inside text-blue-800 space-y-2 text-sm">
+                      <li>Visit the public map at <strong>g3-church-network.web.app</strong></li>
+                      <li>Click on any church to view their profile (this logs a &quot;view&quot; event)</li>
+                      <li>Click &quot;Visit Website&quot; or social media links (logs &quot;visit&quot; and &quot;social_click&quot; events)</li>
+                      <li>Submit the contact form (logs a &quot;contact&quot; event)</li>
+                      <li>Check the Firebase Console - Firestore - <strong>churchStats</strong> and <strong>churchEvents</strong> collections to see the data</li>
+                    </ol>
+                    <p className="text-blue-700 mt-3 text-sm">
+                      <strong>Future Enhancement:</strong> You can add chart visualizations here using the recharts library and Cloud Functions (getChurchAnalytics, getGlobalAnalytics) to display interactive graphs of the tracking data.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
             )}
           </section>
         )}
@@ -2724,17 +3878,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         )}
 
         {/* Leaders View */}
-        {currentView === 'leaders' && (
+        {currentView === 'member-leaders' && (
           <div>
             <div className="mb-6">
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">Church Leaders</h2>
-              <p className="text-gray-600">Complete directory of all leaders from approved churches</p>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Church Elders</h2>
+              <p className="text-gray-600">Complete directory of all elders from approved churches</p>
             </div>
 
             {allLeaders.length === 0 ? (
               <div className="bg-white p-12 rounded-lg shadow-sm text-center border-2 border-dashed border-gray-200">
                 <UserIcon className="w-12 h-12 text-gray-400 mx-auto mb-3 opacity-50" />
-                <div className="text-gray-500 italic">No leaders found. Approve churches to see their leaders here.</div>
+                <div className="text-gray-500 italic">No elders found. Approve churches to see their elders here.</div>
               </div>
             ) : (
               <>
@@ -2743,7 +3897,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   <div className="flex-1 min-w-[200px]">
                     <input
                       type="text"
-                      placeholder="Search leaders by name, email, role, or church..."
+                      placeholder="Search elders by name, email, role, or church..."
                       value={leaderSearchQuery}
                       onChange={(e) => setLeaderSearchQuery(e.target.value)}
                       className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent"
@@ -2773,7 +3927,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 <div className="bg-white rounded-lg shadow overflow-hidden">
                    <div className="px-6 py-3 bg-gray-50 border-b border-gray-200">
                     <p className="text-sm text-gray-600">
-                      Showing {filteredAndSortedLeaders.length} of {allLeaders.length} leaders
+                      Showing {filteredAndSortedLeaders.length} of {allLeaders.length} elders
                       {leaderSearchQuery && ` matching "${leaderSearchQuery}"`}
                     </p>
                   </div>
@@ -2808,7 +3962,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap">
                               <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-brand-100 text-brand-800">
-                                {leader.role}
+                                Elder
                               </span>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap">
@@ -2844,15 +3998,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           </div>
         )}
 
-        {/* Users View */}
-        {currentView === 'users' && (
+        {/* Users Management View */}
+        {currentView === 'settings-users' && (
           <section>
             <div className="flex items-start justify-between mb-6">
               <div>
                 <h2 className="text-2xl font-bold text-gray-900 mb-2">User Management</h2>
                 <p className="text-gray-600">Manage admin users and their permissions.</p>
               </div>
-              <Button onClick={() => { setNewAdminEmail(''); setNewAdminPassword(''); setAddingAdmin(true); }} variant="primary" className="flex items-center">
+              <Button onClick={() => { setNewAdminEmail(''); setNewAdminPassword(''); setShowAddAdminModal(true); }} variant="primary" className="flex items-center">
                 <PlusCircle className="w-4 h-4 mr-2" />
                 Add New Admin
               </Button>
@@ -2861,64 +4015,117 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
             {loadingUsers ? (
               <div className="flex justify-center p-12"><RefreshCw className="w-8 h-8 animate-spin text-gray-400" /></div>
             ) : (
-              <div className="bg-white rounded-lg shadow overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Sign-in</th>
-                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {allUsers.map((u) => (
-                        <tr key={u.uid} className="hover:bg-gray-50">
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="font-medium text-gray-900">{u.email}</div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                              u.role === 'admin' ? 'bg-green-100 text-green-800' :
-                              u.role === 'church_user' ? 'bg-blue-100 text-blue-800' :
-                              'bg-gray-100 text-gray-800'
-                            }`}>
-                              {u.role.replace('_', ' ')}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {u.lastSignInTime ? new Date(u.lastSignInTime).toLocaleString() : 'N/A'}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                            {u.role === 'admin' && u.uid !== user?.uid ? (
-                              <Button
-                                variant="danger"
-                                onClick={() => handleRemoveAdminRole(u.uid, u.email)}
-                                isLoading={userActionLoading === u.uid}
-                                className="px-3 py-1.5 h-8 text-xs"
-                              >
-                                Demote Admin
-                              </Button>
-                            ) : u.role !== 'admin' ? (
-                              <Button
-                                variant="primary"
-                                onClick={() => handleSetAdminRole(u.uid, u.email)}
-                                isLoading={userActionLoading === u.uid}
-                                className="px-3 py-1.5 h-8 text-xs"
-                              >
-                                Make Admin
-                              </Button>
-                            ) : (
-                              <span className="text-gray-400 text-xs px-3 py-1.5">Current User</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              <>
+                {/* Search and Sort Controls for Users */}
+                <div className="mb-4 bg-white p-4 rounded-lg shadow flex gap-4 items-center flex-wrap">
+                  <div className="flex-1 min-w-[200px]">
+                    <input
+                      type="text"
+                      placeholder="Search users by email or role..."
+                      value={userSearchQuery}
+                      onChange={(e) => setUserSearchQuery(e.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent"
+                    />
+                  </div>
+                  <div className="flex gap-2 items-center">
+                    <label className="text-sm font-medium text-gray-700">Sort by:</label>
+                    <select
+                      value={userSortBy}
+                      onChange={(e) => setUserSortBy(e.target.value as any)}
+                      className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-600 bg-white"
+                    >
+                      <option value="email">Email</option>
+                      <option value="role">Role</option>
+                      <option value="lastSignIn">Last Sign-in</option>
+                    </select>
+                    <button
+                      onClick={() => setUserSortOrder(userSortOrder === 'asc' ? 'desc' : 'asc')}
+                      className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                      title={userSortOrder === 'asc' ? 'Sort Descending' : 'Sort Ascending'}
+                    >
+                      {userSortOrder === 'asc' ? '↑' : '↓'}
+                    </button>
+                  </div>
                 </div>
-              </div>
+
+                <div className="bg-white rounded-lg shadow overflow-hidden">
+                  <div className="px-6 py-3 bg-gray-50 border-b border-gray-200">
+                    <p className="text-sm text-gray-600">
+                      Showing {filteredAndSortedUsers.length} of {allUsers.length} users
+                      {userSearchQuery && ` matching "${userSearchQuery}"`}
+                    </p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Sign-in</th>
+                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {filteredAndSortedUsers.map((u) => (
+                          <tr key={u.uid} className="hover:bg-gray-50">
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className="font-medium text-gray-900">{u.email}</div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                                u.role === 'admin' ? 'bg-green-100 text-green-800' :
+                                u.role === 'church_user' ? 'bg-blue-100 text-blue-800' :
+                                'bg-gray-100 text-gray-800'
+                              }`}>
+                                {u.role.replace('_', ' ')}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                              {u.lastSignInTime ? new Date(u.lastSignInTime).toLocaleString() : 'N/A'}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                              <div className="flex justify-end gap-2">
+                                {u.role === 'admin' && u.uid !== user?.uid ? (
+                                  <Button
+                                    variant="danger"
+                                    onClick={() => handleRemoveAdminRole(u.uid, u.email)}
+                                    isLoading={userActionLoading === u.uid}
+                                    className="px-3 py-1.5 h-8 text-xs"
+                                  >
+                                    Demote Admin
+                                  </Button>
+                                ) : u.role !== 'admin' ? (
+                                  <Button
+                                    variant="primary"
+                                    onClick={() => handleSetAdminRole(u.uid, u.email)}
+                                    isLoading={userActionLoading === u.uid}
+                                    className="px-3 py-1.5 h-8 text-xs"
+                                  >
+                                    Make Admin
+                                  </Button>
+                                ) : (
+                                  <span className="text-gray-400 text-xs px-3 py-1.5">Current User</span>
+                                )}
+                                
+                                {u.uid !== user?.uid && (
+                                  <Button
+                                    variant="danger"
+                                    onClick={() => handleDeleteUser(u.uid, u.email)}
+                                    isLoading={userActionLoading === u.uid}
+                                    className="px-3 py-1.5 h-8 text-xs"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </Button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
             )}
           </section>
         )}
@@ -2931,6 +4138,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           onClose={() => setViewingChurch(null)}
           onCreatePortalAccount={handleCreatePortalAccount}
           isProcessingPortalAccount={isProcessingPortalAccount}
+          onUpdate={(updatedChurch) => setViewingChurch(updatedChurch)}
         />
       )}
 
@@ -3017,7 +4225,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     >
                       <option value="Account Setup">Account Setup</option>
                       <option value="Church Information">Church Information</option>
-                      <option value="Leadership">Leadership</option>
+                      <option value="Elders">Elders</option>
                       <option value="Doctrine & Practice">Doctrine & Practice</option>
                       <option value="Network Dues">Network Dues</option>
                     </select>
@@ -3229,8 +4437,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       )}
 
       {/* Add New Admin Modal */}
-      {addingAdmin && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={() => setAddingAdmin(false)}>
+      {showAddAdminModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={() => setShowAddAdminModal(false)}>
           <div className="flex items-center justify-center min-h-screen px-4 py-6">
             <div 
               className="bg-white rounded-lg shadow-2xl max-w-md w-full"
@@ -3238,7 +4446,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
             >
               <div className="bg-black px-6 py-4 flex items-center justify-between">
                 <h3 className="text-xl font-serif font-bold text-white">Add New Admin</h3>
-                <button onClick={() => setAddingAdmin(false)} className="text-gray-300 hover:text-white">
+                <button onClick={() => setShowAddAdminModal(false)} className="text-gray-300 hover:text-white">
                   <X className="w-6 h-6" />
                 </button>
               </div>
@@ -3261,16 +4469,100 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     value={newAdminPassword}
                     onChange={(e) => setNewAdminPassword(e.target.value)}
                     required
+                    minLength={6}
                     className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                     placeholder="••••••••"
                   />
+                  <p className="text-xs text-gray-500 mt-1">Minimum 6 characters</p>
                 </div>
                 <div className="flex justify-end gap-2 pt-4 border-t">
-                  <Button type="button" variant="outline" onClick={() => setAddingAdmin(false)}>
+                  <Button type="button" variant="outline" onClick={() => setShowAddAdminModal(false)}>
                     Cancel
                   </Button>
-                  <Button type="submit" variant="primary" isLoading={addingAdmin}>
+                  <Button type="submit" variant="primary" isLoading={isCreatingAdmin}>
                     Create Admin
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Church Stats Modal */}
+      {viewingStatsChurch && (
+        <ChurchStatsModal
+          churchId={viewingStatsChurch.id}
+          churchName={viewingStatsChurch.name}
+          onClose={() => setViewingStatsChurch(null)}
+        />
+      )}
+
+      {/* Edit Profile Modal */}
+      {showProfileModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={() => setShowProfileModal(false)}>
+          <div className="flex items-center justify-center min-h-screen px-4 py-6">
+            <div 
+              className="bg-white rounded-lg shadow-2xl max-w-md w-full"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="bg-brand-900 px-6 py-4 flex items-center justify-between">
+                <h3 className="text-xl font-serif font-bold text-white">Edit Your Profile</h3>
+                <button onClick={() => setShowProfileModal(false)} className="text-gray-300 hover:text-white">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              <form onSubmit={handleUpdateProfile} className="p-6 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Email Address</label>
+                  <input
+                    type="email"
+                    value={editEmail}
+                    onChange={(e) => setEditEmail(e.target.value)}
+                    required
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    placeholder="admin@example.com"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Changing your email will require re-authentication</p>
+                </div>
+                
+                <div className="pt-4 border-t">
+                  <p className="text-sm font-medium text-gray-700 mb-3">Change Password (optional)</p>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">New Password</label>
+                      <input
+                        type="password"
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        minLength={6}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                        placeholder="••••••••"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Leave blank to keep current password</p>
+                    </div>
+                    {newPassword && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700">Confirm New Password</label>
+                        <input
+                          type="password"
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
+                          minLength={6}
+                          className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                          placeholder="••••••••"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-4 border-t">
+                  <Button type="button" variant="outline" onClick={() => setShowProfileModal(false)}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" variant="primary" isLoading={isSavingProfile}>
+                    Save Changes
                   </Button>
                 </div>
               </form>

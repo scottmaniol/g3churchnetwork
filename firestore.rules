@@ -12,34 +12,31 @@ service cloud.firestore {
     function isChurchOwner(userId) {
       return request.auth != null && request.auth.uid == userId;
     }
+
+    // Helper function to get the authenticated user's churchId safely
+    function getUserChurchId() {
+      return exists(/databases/$(database)/documents/userProfiles/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/userProfiles/$(request.auth.uid)).data.churchId
+        : null;
+    }
     
+    // Helper function to check if the authenticated user is an admin or owns the target churchId
+    function isChurchAdminOwner(targetChurchId) {
+      return isAdmin() || (request.auth != null && getUserChurchId() == targetChurchId);
+    }
+
     // Applications collection rules
     match /applications/{applicationId} {
+      allow read: if resource.data.status == 'APPROVED'; // Publicly readable if approved
+      allow read: if request.auth != null; // Authenticated users can read
       
-      // Allow anyone (including non-authenticated users) to READ approved churches
-      // This enables the public map to display approved churches
-      allow read: if resource.data.status == 'APPROVED';
-      
-      // Allow authenticated users to CREATE new applications
-      // This allows churches to submit applications
       allow create: if request.auth != null 
                     && request.resource.data.status == 'PENDING'
                     && request.resource.data.userId == request.auth.uid;
       
-      // Allow admins to CREATE applications with any status (for CSV import)
       allow create: if isAdmin();
+      allow read, update, delete: if isAdmin();
       
-      // Allow admins to READ all applications (pending, approved, rejected)
-      allow read: if isAdmin();
-      
-      // Allow admins to UPDATE any application (approve, reject, edit)
-      allow update: if isAdmin();
-      
-      // Allow admins to DELETE any application
-      allow delete: if isAdmin();
-      
-      // Allow church owners to UPDATE their own profile
-      // (only if already approved and not changing status)
       allow update: if isChurchOwner(resource.data.userId)
                     && resource.data.status == 'APPROVED'
                     && request.resource.data.status == 'APPROVED';
@@ -47,17 +44,69 @@ service cloud.firestore {
 
     // Settings collection rules
     match /settings/{documentId} {
-      // Allow read/write access for admin users
       allow read, write: if isAdmin();
     }
 
     // User Profiles collection rules
     match /userProfiles/{userId} {
-      // Allow admins to READ and UPDATE any user profile
       allow read, write: if isAdmin();
+      allow read, create, update: if request.auth != null && request.auth.uid == userId;
+    }
 
-      // Allow authenticated users to READ and UPDATE their OWN user profile
-      allow read, update: if request.auth != null && request.auth.uid == userId;
+    // Church Statistics collection rules
+    match /churchStats/{churchId} {
+      allow read: if isAdmin();
+      allow read: if isChurchAdminOwner(churchId);
+      
+      allow update: if request.auth != null
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['visits', 'contacts', 'views', 'socialClicks', 'lastUpdated'])
+                    && request.resource.data.visits >= resource.data.visits
+                    && request.resource.data.contacts >= resource.data.contacts
+                    && request.resource.data.views >= resource.data.views;
+      
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Church Events collection rules
+    match /churchEvents/{eventId} {
+      allow read: if isAdmin();
+      allow read: if request.auth != null 
+                  && request.resource.data.churchId != null
+                  && isChurchAdminOwner(request.resource.data.churchId);
+      
+      allow create: if request.auth != null;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Job Listings collection rules
+    match /jobListings/{jobId} {
+      // Simplified read rule to prevent crashes: Authenticated users can read all jobs
+      // Active jobs are readable by everyone
+      allow read: if resource.data.status == 'active' || request.auth != null;
+
+      // Strict write rules maintained
+      allow create: if isChurchAdminOwner(request.resource.data.churchId);
+      allow update: if isChurchAdminOwner(resource.data.churchId);
+      allow delete: if isChurchAdminOwner(resource.data.churchId);
+
+      // Admins
+      allow read, create, update, delete: if isAdmin();
+    }
+
+    // Job Applications collection rules
+    match /jobApplications/{applicationId} {
+      allow create: if true;
+
+      allow read, update: if request.auth != null && isChurchAdminOwner(resource.data.churchId);
+      
+      allow read, update, delete: if isAdmin();
+    }
+
+    // Promo Codes collection rules
+    match /promoCodes/{promoCode} {
+      allow get: if true; // Allow public verification of individual codes
+      allow list: if isAdmin(); // Only admins can list all codes
+      allow write: if isAdmin();
     }
   }
 }

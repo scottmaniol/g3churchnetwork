@@ -1,13 +1,20 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { AppView, ChurchApplication, ApplicationStatus } from './types';
-import { ApplicationForm } from './components/ApplicationForm';
-import { AdminDashboard } from './components/AdminDashboard';
-import { WorldMap } from './components/WorldMap';
-import { ChurchLogin } from './components/ChurchLogin';
-import { ChurchDashboard } from './components/ChurchDashboard';
-import { RequirementsModal } from './components/RequirementsModal';
 import { Button as MainButton } from './components/Button';
-import { ArrowRight, Lock, Map, Menu, X, CheckCircle, AlertCircle, Church } from 'lucide-react';
+import { ArrowRight, Lock, Menu, X, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+
+// Lazy load heavy components
+const ApplicationForm = lazy(() => import('./components/ApplicationForm').then(module => ({ default: module.ApplicationForm })));
+const AdminDashboard = lazy(() => import('./components/AdminDashboard').then(module => ({ default: module.AdminDashboard })));
+const WorldMap = lazy(() => import('./components/WorldMap').then(module => ({ default: module.WorldMap })));
+const ChurchLogin = lazy(() => import('./components/ChurchLogin').then(module => ({ default: module.ChurchLogin })));
+const ChurchDashboard = lazy(() => import('./components/ChurchDashboard').then(module => ({ default: module.ChurchDashboard })));
+const RequirementsModal = lazy(() => import('./components/RequirementsModal').then(module => ({ default: module.RequirementsModal })));
+const JobBoard = lazy(() => import('./components/JobBoard').then(module => ({ default: module.JobBoard })));
+const JobDetail = lazy(() => import('./components/JobDetail').then(module => ({ default: module.JobDetail })));
+const JobApplicationModal = lazy(() => import('./components/JobApplicationModal').then(module => ({ default: module.JobApplicationModal })));
+const ChurchDetailModal = lazy(() => import('./components/ChurchDetailModal').then(module => ({ default: module.ChurchDetailModal })));
+const ContactAdminModal = lazy(() => import('./components/ContactAdminModal').then(module => ({ default: module.ContactAdminModal })));
 import { 
   subscribeToPublicApplications, 
   submitApplication, 
@@ -18,13 +25,24 @@ import {
   onAuthStateChanged,
   updateChurchProfile
 } from './services/firebase';
+const LoadingFallback = () => (
+  <div className="flex items-center justify-center min-h-[50vh]">
+    <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+    <span className="ml-2 text-gray-500">Loading...</span>
+  </div>
+);
 
 const App: React.FC = () => {
   const [view, setView] = useState<AppView>(AppView.HOME);
   const [publicApplications, setPublicApplications] = useState<ChurchApplication[]>([]);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [showJobApplicationModal, setShowJobApplicationModal] = useState(false);
+  const [currentJobForApplication, setCurrentJobForApplication] = useState<{ jobId: string; jobTitle: string; churchId: string; } | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [churchUserId, setChurchUserId] = useState<string | null>(null);
   const [showRequirementsModal, setShowRequirementsModal] = useState(false);
+  const [showContactModal, setShowContactModal] = useState(false);
+  const [selectedChurchForModal, setSelectedChurchForModal] = useState<ChurchApplication | null>(null);
   
   // Notification State
   const [notification, setNotification] = useState<{
@@ -35,6 +53,16 @@ const App: React.FC = () => {
 
   // Check Configuration on Mount
   useEffect(() => {
+    const path = window.location.pathname;
+    const params = new URLSearchParams(window.location.search);
+    
+    if (path === '/map') {
+      setView(AppView.MAP);
+    } else if (params.has('promo')) {
+      // If promo code is present, go straight to application
+      setView(AppView.APPLY);
+    }
+    
     if (!isFirebaseConfigured()) {
       setNotification({
         message: "SETUP REQUIRED: Update services/firebase.ts with your Firebase Project Config.",
@@ -57,6 +85,13 @@ const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
+  // Redirect to dashboard if on login page and already logged in
+  useEffect(() => {
+    if (churchUserId && view === AppView.CHURCH_LOGIN) {
+      setView(AppView.CHURCH_DASHBOARD);
+    }
+  }, [churchUserId, view]);
+
   // Subscribe to Public (Approved) Data for Map and Home
   useEffect(() => {
     if (!isFirebaseConfigured()) return;
@@ -67,6 +102,32 @@ const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
+  const handleJobClick = (jobId: string) => {
+    setSelectedJobId(jobId);
+    setView(AppView.JOB_DETAIL);
+  };
+
+  const handleApplyForJob = async (jobId: string) => {
+    // Fetch job details to get jobTitle and churchId for the modal
+    const { getJobListing } = await import('./services/firebase');
+    const job = await getJobListing(jobId);
+    
+    if (job) {
+      setCurrentJobForApplication({
+        jobId: job.id,
+        jobTitle: job.title,
+        churchId: job.churchId,
+      });
+      setShowJobApplicationModal(true);
+    } else {
+      setNotification({
+        message: "Failed to load job details for application.",
+        type: 'error'
+      });
+      setTimeout(() => setNotification(null), 7000);
+    }
+  };
+
   const navigateTo = (newView: AppView) => {
     // Show requirements modal before applying
     if (newView === AppView.APPLY) {
@@ -75,6 +136,11 @@ const App: React.FC = () => {
       return;
     }
     
+    // Clear selected job when navigating away from job views
+    if (newView !== AppView.JOB_DETAIL && newView !== AppView.JOB_BOARD) {
+      setSelectedJobId(null);
+    }
+
     setView(newView);
     setMobileMenuOpen(false);
   };
@@ -160,30 +226,60 @@ const App: React.FC = () => {
     setView(AppView.HOME);
   };
 
+  const handleShowChurchDetails = async (churchId: string) => {
+    const { getChurchApplication } = await import('./services/firebase');
+    const church = await getChurchApplication(churchId);
+    if (church) {
+      setSelectedChurchForModal(church);
+    } else {
+      setNotification({
+        message: "Failed to load church details.",
+        type: 'error'
+      });
+      setTimeout(() => setNotification(null), 7000);
+    }
+  };
+
   // --- Views ---
 
   const renderHeader = () => (
     <nav className="bg-white text-gray-900 shadow-md sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between h-[106px] items-center">
-          <a href="https://g3min.org" target="_blank" rel="noopener noreferrer" className="flex items-center cursor-pointer">
-             <img 
-              src="https://firebasestorage.googleapis.com/v0/b/g3-church-network.firebasestorage.app/o/images%2Fg3_logo.png?alt=media" 
-              alt="G3 Church Network" 
-              className="w-[300px] h-[86px] object-contain" 
-            />
-          </a>
+          <div className="flex items-center gap-3">
+            <a href="https://g3min.org" target="_blank" rel="noopener noreferrer" className="flex items-center cursor-pointer">
+               <img 
+                src="https://firebasestorage.googleapis.com/v0/b/g3-church-network.firebasestorage.app/o/images%2Fg3_logo.png?alt=media" 
+                alt="G3 Church Network" 
+                className="w-[250px] h-[72px] object-contain" 
+              />
+            </a>
+            
+            {/* Development Mode Indicator */}
+            {import.meta.env.DEV && (
+              <div className="flex items-center gap-2 bg-orange-100 border border-orange-300 text-orange-800 px-3 py-1.5 rounded-full text-xs font-semibold">
+                <div className="w-2 h-2 bg-orange-500 rounded-full animate-pulse"></div>
+                DEVELOPMENT
+              </div>
+            )}
+          </div>
           
           {/* Desktop Nav */}
           <div className="hidden md:flex space-x-8 items-center">
-            <button onClick={() => navigateTo(AppView.MAP)} className="text-gray-600 hover:text-gray-900 font-medium transition flex items-center gap-2 text-[14px] uppercase tracking-wider">
-              <Map className="w-4 h-4" /> Network Map
+            <button onClick={() => navigateTo(AppView.MAP)} className="text-gray-600 hover:text-gray-900 font-medium transition text-[14px] uppercase tracking-wider">
+              Network Map
             </button>
-            <button onClick={() => navigateTo(AppView.CHURCH_LOGIN)} className="text-gray-600 hover:text-gray-900 font-medium transition flex items-center gap-2 text-[14px] uppercase tracking-wider">
-              <Church className="w-4 h-4" /> Church Portal
+            <button onClick={() => navigateTo(AppView.JOB_BOARD)} className="text-gray-600 hover:text-gray-900 font-medium transition text-[14px] uppercase tracking-wider">
+              Job Board
+            </button>
+            <button 
+              onClick={() => navigateTo(churchUserId ? AppView.CHURCH_DASHBOARD : AppView.CHURCH_LOGIN)} 
+              className="text-gray-600 hover:text-gray-900 font-medium transition text-[14px] uppercase tracking-wider"
+            >
+              Church Portal
             </button>
             <MainButton variant="primary" onClick={() => navigateTo(AppView.APPLY)} className="py-2 px-4 text-[14px] uppercase tracking-wider">
-              Apply Now
+              Join the Network
             </MainButton>
           </div>
 
@@ -200,7 +296,8 @@ const App: React.FC = () => {
       {mobileMenuOpen && (
         <div className="md:hidden bg-white border-t px-2 pt-2 pb-3 space-y-1 sm:px-3 shadow-lg">
           <button onClick={() => navigateTo(AppView.MAP)} className="block px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-50 text-gray-600 w-full text-left uppercase tracking-wider">Network Map</button>
-          <button onClick={() => navigateTo(AppView.CHURCH_LOGIN)} className="block px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-50 text-gray-600 w-full text-left uppercase tracking-wider">Church Portal</button>
+          <button onClick={() => navigateTo(AppView.JOB_BOARD)} className="block px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-50 text-gray-600 w-full text-left uppercase tracking-wider">Job Board</button>
+          <button onClick={() => navigateTo(churchUserId ? AppView.CHURCH_DASHBOARD : AppView.CHURCH_LOGIN)} className="block px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-50 text-gray-600 w-full text-left uppercase tracking-wider">Church Portal</button>
           <button onClick={() => navigateTo(AppView.APPLY)} className="block px-3 py-2 rounded-md text-sm font-medium bg-gray-50 text-gray-900 w-full text-left mt-4 uppercase tracking-wider">Apply Now</button>
         </div>
       )}
@@ -217,6 +314,7 @@ const App: React.FC = () => {
             src="https://firebasestorage.googleapis.com/v0/b/g3-church-network.firebasestorage.app/o/images%2FChurch-White-Black-G3-scaled.jpeg?alt=media" 
             alt="Congregation" 
           />
+          <div className="absolute inset-0 bg-[#ba9150] opacity-20 mix-blend-multiply" />
           <div className="absolute inset-0 bg-gradient-to-t from-black to-transparent mix-blend-multiply" />
         </div>
         <div className="relative max-w-7xl mx-auto py-24 px-4 sm:py-32 sm:px-6 lg:px-8">
@@ -232,7 +330,7 @@ const App: React.FC = () => {
             </MainButton>
             <MainButton 
               variant="outline" 
-              className="bg-white text-black border-white hover:bg-gray-100" 
+              className="bg-white text-black border-white hover:bg-gray-100 transition-transform hover:scale-105" 
               onClick={() => navigateTo(AppView.MAP)}
             >
               View Map <ArrowRight className="ml-2 w-4 h-4" />
@@ -358,11 +456,15 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen font-sans bg-gray-50 flex flex-col">
       {/* Requirements Modal */}
-      <RequirementsModal
-        isOpen={showRequirementsModal}
-        onClose={handleCloseModal}
-        onContinue={handleContinueToApplication}
-      />
+      {showRequirementsModal && (
+        <Suspense fallback={null}>
+          <RequirementsModal
+            isOpen={showRequirementsModal}
+            onClose={handleCloseModal}
+            onContinue={handleContinueToApplication}
+          />
+        </Suspense>
+      )}
 
       {/* Notification Toast */}
       {notification && (
@@ -408,56 +510,128 @@ const App: React.FC = () => {
       <main className="flex-grow">
         {view === AppView.HOME && renderHome()}
         
-        {view === AppView.APPLY && (
-          <ApplicationForm 
-            onSubmit={handleApplicationSubmit}
-            onCancel={() => navigateTo(AppView.HOME)}
-          />
-        )}
-        
-        {view === AppView.ADMIN && (
-          <AdminDashboard 
-            onBack={() => navigateTo(AppView.HOME)}
-          />
-        )}
-        
-        {view === AppView.MAP && (
-          <WorldMap 
-            churches={publicApplications}
-            onBack={() => navigateTo(AppView.HOME)}
-            onJoinClick={() => navigateTo(AppView.APPLY)}
-          />
-        )}
+        <Suspense fallback={<LoadingFallback />}>
+          {view === AppView.APPLY && (
+            <ApplicationForm 
+              onSubmit={handleApplicationSubmit}
+              onCancel={() => navigateTo(AppView.HOME)}
+            />
+          )}
+          
+          {view === AppView.ADMIN && (
+            <AdminDashboard 
+              onBack={() => navigateTo(AppView.HOME)}
+            />
+          )}
+          
+          {view === AppView.MAP && (
+            <WorldMap 
+              churches={publicApplications}
+              onBack={() => navigateTo(AppView.HOME)}
+              onJoinClick={() => navigateTo(AppView.APPLY)}
+              onJobClick={handleJobClick}
+            />
+          )}
 
-        {view === AppView.CHURCH_LOGIN && (
-          <ChurchLogin
-            onBack={() => navigateTo(AppView.HOME)}
-            onLoginSuccess={handleChurchLogin}
-          />
-        )}
+          {view === AppView.CHURCH_LOGIN && (
+            <ChurchLogin
+              onBack={() => navigateTo(AppView.HOME)}
+              onLoginSuccess={handleChurchLogin}
+            />
+          )}
 
-        {view === AppView.CHURCH_DASHBOARD && churchUserId && (
-          <ChurchDashboard
-            userId={churchUserId}
-            onBack={() => navigateTo(AppView.HOME)}
-            onLogout={handleChurchLogout}
-          />
-        )}
+          {view === AppView.CHURCH_DASHBOARD && churchUserId && (
+            <ChurchDashboard
+              userId={churchUserId}
+              onBack={() => navigateTo(AppView.HOME)}
+              onLogout={handleChurchLogout}
+            />
+          )}
+
+          {view === AppView.JOB_BOARD && (
+            <JobBoard
+              onJobClick={handleJobClick}
+              onApplyClick={handleApplyForJob}
+              onBack={() => navigateTo(AppView.HOME)}
+              onChurchClick={handleShowChurchDetails}
+            />
+          )}
+
+          {view === AppView.JOB_DETAIL && selectedJobId && (
+            <JobDetail
+              jobId={selectedJobId}
+              onBack={() => setView(AppView.JOB_BOARD)}
+              onApplyClick={handleApplyForJob}
+            />
+          )}
+        </Suspense>
       </main>
 
-      {view !== AppView.MAP && view !== AppView.CHURCH_LOGIN && view !== AppView.CHURCH_DASHBOARD && (
+      {/* Church Detail Modal */}
+      {selectedChurchForModal && (
+        <Suspense fallback={<LoadingFallback />}>
+          <ChurchDetailModal
+            church={selectedChurchForModal}
+            onClose={() => setSelectedChurchForModal(null)}
+            onJobClick={(jobId) => {
+              setSelectedChurchForModal(null);
+              handleJobClick(jobId);
+            }}
+          />
+        </Suspense>
+      )}
+
+      {/* Job Application Modal */}
+      {showJobApplicationModal && currentJobForApplication && (
+        <Suspense fallback={null}>
+          <JobApplicationModal
+            isOpen={showJobApplicationModal}
+            onClose={() => setShowJobApplicationModal(false)}
+            jobId={currentJobForApplication.jobId}
+            jobTitle={currentJobForApplication.jobTitle}
+            churchId={currentJobForApplication.churchId}
+            onSuccess={() => {
+              setNotification({
+                message: "Your job application has been submitted successfully!",
+                type: 'success'
+              });
+              setTimeout(() => setNotification(null), 7000);
+              setShowJobApplicationModal(false);
+            }}
+          />
+        </Suspense>
+      )}
+
+      {view !== AppView.MAP && view !== AppView.CHURCH_LOGIN && view !== AppView.CHURCH_DASHBOARD && view !== AppView.JOB_BOARD && view !== AppView.JOB_DETAIL && (
         <footer className="bg-black text-white py-12">
           <div className="max-w-7xl mx-auto px-4 text-center">
             <div className="font-serif text-2xl font-bold mb-4">G3 Church Network</div>
-            <p className="text-gray-400 mb-2">© {new Date().getFullYear()} G3 Ministries. All rights reserved.</p>
-            <button 
-              onClick={() => navigateTo(AppView.ADMIN)} 
-              className="text-gray-500 hover:text-gray-300 text-sm transition flex items-center gap-1 justify-center mx-auto"
-            >
-              <Lock className="w-3 h-3" /> Admin
-            </button>
+            <p className="text-gray-400 mb-4">© {new Date().getFullYear()} G3 Ministries. All rights reserved.</p>
+            
+            <div className="flex flex-col items-center gap-2">
+              <button 
+                onClick={() => setShowContactModal(true)}
+                className="text-gray-400 hover:text-white text-sm transition"
+              >
+                Contact Us
+              </button>
+              
+              <button 
+                onClick={() => navigateTo(AppView.ADMIN)} 
+                className="text-gray-500 hover:text-gray-300 text-sm transition flex items-center gap-1"
+              >
+                <Lock className="w-3 h-3" /> Admin
+              </button>
+            </div>
           </div>
         </footer>
+      )}
+
+      {/* Contact Admin Modal */}
+      {showContactModal && (
+        <Suspense fallback={<LoadingFallback />}>
+          <ContactAdminModal onClose={() => setShowContactModal(false)} />
+        </Suspense>
       )}
     </div>
   );

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { ChurchApplication, ChurchLeader, ChurchGathering, ApplicationStatus } from '../types';
+import { ChurchApplication, ChurchLeader, ChurchGathering, ApplicationStatus, ChurchStatistics } from '../types';
 import { Button } from './Button';
-import { ArrowLeft, LogOut, Plus, Trash2, CheckCircle, Clock, XCircle, Save, Upload, CreditCard, AlertTriangle } from 'lucide-react';
-import { logout, getChurchByUserId, updateChurchProfile, uploadChurchLogo } from '../services/firebase';
+import { ArrowLeft, LogOut, Plus, Trash2, CheckCircle, Clock, XCircle, Save, Upload, CreditCard, AlertTriangle, BarChart3, Eye, ExternalLink, Mail, Briefcase } from 'lucide-react';
+import { logout, getChurchByUserId, updateChurchProfile, uploadChurchLogo, createStripeBillingPortalSession, getChurchAnalytics, ensureUserProfile } from '../services/firebase';
+import { JobManagement } from './JobManagement';
 
 interface ChurchDashboardProps {
   userId: string;
@@ -15,8 +16,10 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
-  const [activeTab, setActiveTab] = useState<'info' | 'leadership' | 'schedule' | 'connections' | 'dues'>('info');
+  const [activeTab, setActiveTab] = useState<'info' | 'leadership' | 'schedule' | 'connections' | 'dues' | 'statistics' | 'jobs'>('info');
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [statistics, setStatistics] = useState<ChurchStatistics | null>(null);
+  const [loadingStats, setLoadingStats] = useState(true);
 
   // Editable state
   const [editedChurch, setEditedChurch] = useState<ChurchApplication | null>(null);
@@ -26,10 +29,35 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
       setChurch(churchData);
       setEditedChurch(churchData);
       setLoading(false);
+      
+      // Ensure user profile exists (self-repair)
+      if (churchData && churchData.id) {
+        ensureUserProfile(userId, churchData.applicantEmail, churchData.id);
+      }
     });
 
     return () => unsubscribe();
   }, [userId]);
+
+  // Fetch analytics when church is loaded
+  useEffect(() => {
+    if (!church) return;
+
+    const fetchAnalytics = async () => {
+      setLoadingStats(true);
+      try {
+        const stats = await getChurchAnalytics(church.id);
+        setStatistics(stats as ChurchStatistics);
+      } catch (error) {
+        console.error("Error fetching church analytics:", error);
+        setStatistics(null);
+      } finally {
+        setLoadingStats(false);
+      }
+    };
+
+    fetchAnalytics();
+  }, [church]);
 
   const handleLogout = async () => {
     await logout();
@@ -136,6 +164,24 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
     });
   };
 
+  const handleUpdatePaymentMethod = async () => {
+    if (!church || !church.stripeCustomerId) {
+      alert('No payment method found. Please contact support.');
+      return;
+    }
+
+    try {
+      const { url } = await createStripeBillingPortalSession(
+        church.stripeCustomerId,
+        window.location.href
+      );
+      window.location.href = url;
+    } catch (error) {
+      console.error('Error opening billing portal:', error);
+      alert('Failed to open payment portal. Please try again or contact support.');
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -227,21 +273,29 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
             <nav className="flex -mb-px">
               {[
                 { id: 'info', label: 'Church Info' },
+                { id: 'jobs', label: 'Job Listings' },
+                { id: 'statistics', label: 'Statistics' },
                 { id: 'dues', label: 'Network Dues' },
-                { id: 'leadership', label: 'Leadership' },
+                { id: 'leadership', label: 'Elders' },
                 { id: 'schedule', label: 'Schedule' },
                 { id: 'connections', label: 'Connections' }
               ].map(tab => (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id as any)}
+                  onClick={() => setActiveTab(tab.id as 'info' | 'leadership' | 'schedule' | 'connections' | 'dues' | 'statistics' | 'jobs')}
                   className={`px-6 py-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
                     activeTab === tab.id
                       ? 'border-black text-black'
                       : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                   }`}
                 >
-                  {tab.label}
+                  {tab.label === 'Job Listings' ? (
+                    <span className="flex items-center gap-2">
+                      <Briefcase className="w-4 h-4" /> Job Listings
+                    </span>
+                  ) : (
+                    tab.label
+                  )}
                 </button>
               ))}
             </nav>
@@ -251,6 +305,41 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
           <div className="p-6">
             {activeTab === 'info' && (
               <div className="space-y-6">
+                {/* Applicant Information Section */}
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Primary Contact Information</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">First Name</label>
+                      <input
+                        type="text"
+                        value={editedChurch.applicantFirstName}
+                        onChange={(e) => setEditedChurch({ ...editedChurch, applicantFirstName: e.target.value })}
+                        className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Last Name</label>
+                      <input
+                        type="text"
+                        value={editedChurch.applicantLastName}
+                        onChange={(e) => setEditedChurch({ ...editedChurch, applicantLastName: e.target.value })}
+                        className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Email Address</label>
+                      <input
+                        type="email"
+                        value={editedChurch.applicantEmail}
+                        onChange={(e) => setEditedChurch({ ...editedChurch, applicantEmail: e.target.value })}
+                        className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">This is your login email and primary contact.</p>
+                    </div>
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Church Logo</label>
                   <div className="flex items-center gap-4">
@@ -371,6 +460,14 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
               </div>
             )}
 
+            {activeTab === 'jobs' && church && (
+              <JobManagement
+                churchId={church.id}
+                churchName={church.churchName}
+                churchLogoUrl={church.churchLogoUrl}
+              />
+            )}
+
             {activeTab === 'dues' && (
               <div className="space-y-6">
                 <div className="bg-white p-6 border rounded-lg shadow-sm">
@@ -438,7 +535,7 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
                         </Button>
                       )}
                       
-                      <Button variant="outline">
+                      <Button variant="outline" onClick={handleUpdatePaymentMethod}>
                         Update Payment Method
                       </Button>
                     </div>
@@ -482,19 +579,6 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
                       </div>
                     </div>
 
-                    <div className="mb-4">
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
-                      <select
-                        value={leader.role}
-                        onChange={(e) => handleLeaderChange(leader.id, 'role', e.target.value)}
-                        className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                      >
-                        <option value="Elder">Elder</option>
-                        <option value="Pastor">Pastor</option>
-                        <option value="Deacon">Deacon</option>
-                        <option value="Other">Other</option>
-                      </select>
-                    </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
@@ -589,6 +673,193 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
                   <Plus className="w-4 h-4 mr-2" />
                   Add Gathering
                 </Button>
+              </div>
+            )}
+
+            {activeTab === 'statistics' && (
+              <div className="space-y-6">
+                <div className="bg-white p-6 border rounded-lg shadow-sm">
+                  <h3 className="text-lg font-serif font-bold text-gray-900 mb-4 flex items-center">
+                    <BarChart3 className="w-5 h-5 mr-2 text-gray-700" />
+                    Profile Engagement Statistics
+                  </h3>
+                  
+                  <p className="text-sm text-gray-600 mb-6">
+                    Track how visitors interact with your church profile on the G3 Network map.
+                  </p>
+
+                  {loadingStats ? (
+                    <div className="text-center py-12 bg-gray-50 rounded-lg">
+                      <div className="animate-spin text-gray-900">Loading statistics...</div>
+                    </div>
+                  ) : statistics ? (
+                    <>
+                      {/* All-Time Stats */}
+                      <div className="mb-8">
+                        <h4 className="text-sm font-semibold text-gray-700 mb-4 uppercase tracking-wide">All-Time Totals</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                          <div className="bg-blue-50 p-6 rounded-lg border border-blue-100">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-sm font-medium text-blue-900">Profile Views</span>
+                              <Eye className="w-5 h-5 text-blue-600" />
+                            </div>
+                            <div className="text-3xl font-bold text-blue-900">{statistics.total?.views || 0}</div>
+                            <p className="text-xs text-blue-700 mt-1">Times your profile was opened</p>
+                          </div>
+
+                          <div className="bg-green-50 p-6 rounded-lg border border-green-100">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-sm font-medium text-green-900">Website Visits</span>
+                              <ExternalLink className="w-5 h-5 text-green-600" />
+                            </div>
+                            <div className="text-3xl font-bold text-green-900">{statistics.total?.visits || 0}</div>
+                            <p className="text-xs text-green-700 mt-1">Times visitors clicked "Visit Website"</p>
+                          </div>
+
+                          <div className="bg-purple-50 p-6 rounded-lg border border-purple-100">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-sm font-medium text-purple-900">Contact Requests</span>
+                              <Mail className="w-5 h-5 text-purple-600" />
+                            </div>
+                            <div className="text-3xl font-bold text-purple-900">{statistics.total?.contacts || 0}</div>
+                            <p className="text-xs text-purple-700 mt-1">Messages sent via contact form</p>
+                          </div>
+
+                          <div className="bg-orange-50 p-6 rounded-lg border border-orange-100">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-sm font-medium text-orange-900">Social Clicks</span>
+                              <ExternalLink className="w-5 h-5 text-orange-600" />
+                            </div>
+                            <div className="text-3xl font-bold text-orange-900">{statistics.total?.socialClicks || 0}</div>
+                            <p className="text-xs text-orange-700 mt-1">Social media link clicks</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Recent Performance */}
+                      <div className="mb-8">
+                        <h4 className="text-sm font-semibold text-gray-700 mb-4 uppercase tracking-wide">Recent Performance</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          {/* Last 30 Days */}
+                          <div className="bg-gray-50 p-6 rounded-lg border border-gray-200">
+                            <h5 className="text-sm font-bold text-gray-900 mb-4">Last 30 Days</h5>
+                            <div className="space-y-3">
+                              <div className="flex justify-between items-center">
+                                <span className="text-sm text-gray-600 flex items-center">
+                                  <Eye className="w-4 h-4 mr-2 text-blue-500" />
+                                  Profile Views
+                                </span>
+                                <span className="text-lg font-bold text-gray-900">{statistics.last30Days?.views || 0}</span>
+                              </div>
+                              <div className="flex justify-between items-center">
+                                <span className="text-sm text-gray-600 flex items-center">
+                                  <ExternalLink className="w-4 h-4 mr-2 text-green-500" />
+                                  Website Visits
+                                </span>
+                                <span className="text-lg font-bold text-gray-900">{statistics.last30Days?.visits || 0}</span>
+                              </div>
+                              <div className="flex justify-between items-center">
+                                <span className="text-sm text-gray-600 flex items-center">
+                                  <Mail className="w-4 h-4 mr-2 text-purple-500" />
+                                  Contact Requests
+                                </span>
+                                <span className="text-lg font-bold text-gray-900">{statistics.last30Days?.contacts || 0}</span>
+                              </div>
+                              <div className="flex justify-between items-center">
+                                <span className="text-sm text-gray-600 flex items-center">
+                                  <ExternalLink className="w-4 h-4 mr-2 text-orange-500" />
+                                  Social Clicks
+                                </span>
+                                <span className="text-lg font-bold text-gray-900">{statistics.last30Days?.socialClicks || 0}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Last 7 Days */}
+                          <div className="bg-gray-50 p-6 rounded-lg border border-gray-200">
+                            <h5 className="text-sm font-bold text-gray-900 mb-4">Last 7 Days</h5>
+                            <div className="space-y-3">
+                              <div className="flex justify-between items-center">
+                                <span className="text-sm text-gray-600 flex items-center">
+                                  <Eye className="w-4 h-4 mr-2 text-blue-500" />
+                                  Profile Views
+                                </span>
+                                <span className="text-lg font-bold text-gray-900">{statistics.last7Days?.views || 0}</span>
+                              </div>
+                              <div className="flex justify-between items-center">
+                                <span className="text-sm text-gray-600 flex items-center">
+                                  <ExternalLink className="w-4 h-4 mr-2 text-green-500" />
+                                  Website Visits
+                                </span>
+                                <span className="text-lg font-bold text-gray-900">{statistics.last7Days?.visits || 0}</span>
+                              </div>
+                              <div className="flex justify-between items-center">
+                                <span className="text-sm text-gray-600 flex items-center">
+                                  <Mail className="w-4 h-4 mr-2 text-purple-500" />
+                                  Contact Requests
+                                </span>
+                                <span className="text-lg font-bold text-gray-900">{statistics.last7Days?.contacts || 0}</span>
+                              </div>
+                              <div className="flex justify-between items-center">
+                                <span className="text-sm text-gray-600 flex items-center">
+                                  <ExternalLink className="w-4 h-4 mr-2 text-orange-500" />
+                                  Social Clicks
+                                </span>
+                                <span className="text-lg font-bold text-gray-900">{statistics.last7Days?.socialClicks || 0}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Social Media Breakdown */}
+                      {statistics.socialBreakdown && Object.keys(statistics.socialBreakdown).length > 0 && (
+                        <div className="mb-8">
+                          <h4 className="text-sm font-semibold text-gray-700 mb-4 uppercase tracking-wide">Social Media Engagement</h4>
+                          <div className="bg-gray-50 p-6 rounded-lg border border-gray-200">
+                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                              {Object.entries(statistics.socialBreakdown).map(([platform, count]) => (
+                                <div key={platform} className="text-center">
+                                  <div className="text-2xl font-bold text-gray-900">{count}</div>
+                                  <div className="text-xs text-gray-600 capitalize mt-1">{platform}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Last Activity */}
+                      {statistics.lastActivity && (
+                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                          <div className="flex items-center">
+                            <Clock className="w-5 h-5 text-blue-600 mr-3 flex-shrink-0" />
+                            <div>
+                              <p className="text-sm font-semibold text-blue-900">Most Recent Activity</p>
+                              <p className="text-xs text-blue-700 mt-1">
+                                {new Date(statistics.lastActivity).toLocaleString()}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="text-center py-12 bg-gray-50 rounded-lg">
+                      <BarChart3 className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                      <p className="text-gray-600">No statistics available yet</p>
+                      <p className="text-sm text-gray-500 mt-1">Statistics will appear once visitors interact with your profile</p>
+                    </div>
+                  )}
+
+                  {statistics && statistics.lastUpdated && (
+                    <div className="mt-6 pt-6 border-t">
+                      <p className="text-xs text-gray-500 text-right">
+                        Last updated: {new Date(statistics.lastUpdated).toLocaleString()}
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 

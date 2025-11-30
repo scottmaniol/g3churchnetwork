@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { Button } from './Button';
 import { ChurchApplication, ApplicationStatus, ChurchLeader, ChurchGathering } from '../types';
-import { ArrowLeft, Plus, Trash2, CreditCard } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, CreditCard, Mail } from 'lucide-react';
 import { loadStripe, StripeCardElement } from '@stripe/stripe-js';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { stripePromise } from '../services/stripe';
-import { createStripeSetupIntent } from '../services/firebase';
+import { createStripeSetupIntent, verifyPromoCode } from '../services/firebase';
+import { ContactAdminModal } from './ContactAdminModal';
 
 interface ApplicationFormProps {
   onSubmit: (app: Omit<ChurchApplication, 'id'>, password: string) => void;
@@ -44,6 +45,9 @@ const INITIAL_STATE = {
   // Payment
   paymentAmount: 500,
   paymentFrequency: 'yearly' as 'yearly' | 'one_time',
+
+  // Promo Code
+  promoCode: '',
 };
 
 const CARD_ELEMENT_OPTIONS = {
@@ -73,12 +77,44 @@ const ApplicationFormContent: React.FC<ApplicationFormProps> = ({ onSubmit, onCa
   const [passwordError, setPasswordError] = useState('');
   const [paymentError, setPaymentError] = useState('');
   const [paymentReady, setPaymentReady] = useState(false);
+  const [promoCode, setPromoCode] = useState('');
+  const [showPromoField, setShowPromoField] = useState(false);
+  const [promoCodeMessage, setPromoCodeMessage] = useState('');
+  const [isPromoCodeValid, setIsPromoCodeValid] = useState(false);
+  const [showContactModal, setShowContactModal] = useState(false);
+
 
   React.useEffect(() => {
     if (stripe) {
       setPaymentReady(true);
     }
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('promo') === 'true') {
+      setShowPromoField(true);
+    }
   }, [stripe]);
+
+  const handlePromoCodeCheck = async () => {
+    if (!promoCode) {
+      setPromoCodeMessage('Please enter a promo code.');
+      return;
+    }
+    try {
+      const isValid = await verifyPromoCode(promoCode);
+      if (isValid) {
+        setPromoCodeMessage('Promo code applied successfully!');
+        setIsPromoCodeValid(true);
+        // Optionally, reset payment fields
+        setFormData(prev => ({ ...prev, paymentAmount: 0 }));
+      } else {
+        setPromoCodeMessage('Invalid or expired promo code.');
+        setIsPromoCodeValid(false);
+      }
+    } catch (error) {
+      setPromoCodeMessage('Error verifying promo code.');
+      setIsPromoCodeValid(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -96,55 +132,68 @@ const ApplicationFormContent: React.FC<ApplicationFormProps> = ({ onSubmit, onCa
       return;
     }
 
-    // Validate Payment
-    if (formData.paymentAmount < 500) {
+    // Validate Payment (only if no valid promo code)
+    if (!isPromoCodeValid && formData.paymentAmount < 500) {
       setPaymentError('Minimum dues amount is $500.');
       return;
     }
 
-    if (!stripe || !elements) {
-      setPaymentError('Payment system not initialized. Please try again.');
-      return;
-    }
+    if (!isPromoCodeValid) {
+      if (!stripe || !elements) {
+        setPaymentError('Payment system not initialized. Please try again.');
+        return;
+      }
 
-    const cardElement = elements.getElement(CardElement);
-    if (!cardElement) return;
+      const cardElement = elements.getElement(CardElement);
+      if (!cardElement) return;
+    }
 
     setIsSubmitting(true);
     
     try {
-      // 1. Create Setup Intent to get Client Secret
-      // We use the applicant's name and email for the customer record
-      const { clientSecret, customerId } = await createStripeSetupIntent(
-        formData.applicantEmail, 
-        `${formData.applicantFirstName} ${formData.applicantLastName}`
-      );
+      let customerId = '';
+      let paymentMethodId = '';
 
-      // 2. Confirm Card Setup
-      const result = await stripe.confirmCardSetup(clientSecret, {
-        payment_method: {
-          card: cardElement as any,
-          billing_details: {
-            name: `${formData.applicantFirstName} ${formData.applicantLastName}`,
-            email: formData.applicantEmail,
-            phone: formData.churchPhone,
+      if (!isPromoCodeValid) {
+        const cardElement = elements.getElement(CardElement);
+        if (!cardElement) {
+            setPaymentError('Card details are not correct. Please try again.');
+            return;
+        }
+        // 1. Create Setup Intent to get Client Secret
+        const setupIntentResult = await createStripeSetupIntent(
+          formData.applicantEmail, 
+          `${formData.applicantFirstName} ${formData.applicantLastName}`
+        );
+        customerId = setupIntentResult.customerId;
+        const clientSecret = setupIntentResult.clientSecret;
+
+        // 2. Confirm Card Setup
+        const result = await stripe!.confirmCardSetup(clientSecret, {
+          payment_method: {
+            card: cardElement,
+            billing_details: {
+              name: `${formData.applicantFirstName} ${formData.applicantLastName}`,
+              email: formData.applicantEmail,
+              phone: formData.churchPhone,
+            },
           },
-        },
-      });
+        });
 
-      if (result.error) {
-        setPaymentError(result.error.message || 'Payment setup failed.');
-        setIsSubmitting(false);
-        return;
+        if (result.error) {
+          setPaymentError(result.error.message || 'Payment setup failed.');
+          setIsSubmitting(false);
+          return;
+        }
+
+        if (!result.setupIntent || result.setupIntent.status !== 'succeeded') {
+          setPaymentError('Payment setup failed. Please check your card details.');
+          setIsSubmitting(false);
+          return;
+        }
+
+        paymentMethodId = result.setupIntent.payment_method as string;
       }
-
-      if (!result.setupIntent || result.setupIntent.status !== 'succeeded') {
-        setPaymentError('Payment setup failed. Please check your card details.');
-        setIsSubmitting(false);
-        return;
-      }
-
-      const paymentMethodId = result.setupIntent.payment_method as string;
 
       // 3. Prepare Application Data
       const { password, confirmPassword, ...applicationData } = formData;
@@ -153,6 +202,7 @@ const ApplicationFormContent: React.FC<ApplicationFormProps> = ({ onSubmit, onCa
         ...applicationData,
         stripeCustomerId: customerId,
         stripePaymentMethodId: paymentMethodId,
+        promoCodeUsed: isPromoCodeValid ? promoCode : '',
         status: ApplicationStatus.PENDING,
         submittedAt: new Date().toISOString(),
       };
@@ -320,9 +370,9 @@ const ApplicationFormContent: React.FC<ApplicationFormProps> = ({ onSubmit, onCa
             </div>
           </fieldset>
 
-          {/* Leadership (Optional) */}
+          {/* Elders (Optional) */}
           <fieldset className="space-y-6">
-            <legend className="text-xl font-serif font-semibold text-gray-900 border-b pb-2 w-full">Leadership (Optional - can add later)</legend>
+            <legend className="text-xl font-serif font-semibold text-gray-900 border-b pb-2 w-full">Elders (Optional - can add later)</legend>
             
             {formData.leaders.map((leader) => (
               <div key={leader.id} className="border border-gray-200 rounded-lg p-4 relative">
@@ -351,17 +401,7 @@ const ApplicationFormContent: React.FC<ApplicationFormProps> = ({ onSubmit, onCa
                   />
                 </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <select
-                    value={leader.role}
-                    onChange={(e) => updateLeader(leader.id, 'role', e.target.value)}
-                    className="rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                  >
-                    <option value="Elder">Elder</option>
-                    <option value="Pastor">Pastor</option>
-                    <option value="Deacon">Deacon</option>
-                    <option value="Other">Other</option>
-                  </select>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <input
                     type="email"
                     placeholder="Email"
@@ -427,11 +467,41 @@ const ApplicationFormContent: React.FC<ApplicationFormProps> = ({ onSubmit, onCa
           </fieldset>
 
           {/* Network Dues */}
+          {!isPromoCodeValid && (
           <fieldset className="space-y-6">
             <legend className="text-xl font-serif font-semibold text-gray-900 border-b pb-2 w-full flex items-center">
               <CreditCard className="w-5 h-5 mr-2" />
               Network Dues
             </legend>
+
+            {showPromoField && (
+              <div className="p-4 border border-gray-300 rounded-md bg-white">
+                <label htmlFor="promoCode" className="block text-sm font-medium text-gray-700">Promo Code</label>
+                <div className="mt-1 flex rounded-md shadow-sm">
+                  <input
+                    type="text"
+                    name="promoCode"
+                    id="promoCode"
+                    value={promoCode}
+                    onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
+                    className="flex-1 block w-full rounded-none rounded-l-md sm:text-sm border-gray-300 p-2 border"
+                    placeholder="Enter code"
+                  />
+                  <button
+                    type="button"
+                    onClick={handlePromoCodeCheck}
+                    className="inline-flex items-center px-4 py-2 border border-l-0 border-gray-300 rounded-r-md bg-gray-50 text-sm font-medium text-gray-700 hover:bg-gray-100"
+                  >
+                    Apply
+                  </button>
+                </div>
+                {promoCodeMessage && (
+                  <p className={`mt-2 text-sm ${isPromoCodeValid ? 'text-green-600' : 'text-red-600'}`}>
+                    {promoCodeMessage}
+                  </p>
+                )}
+              </div>
+            )}
             
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
               <p className="font-semibold mb-1">Important Payment Information</p>
@@ -506,23 +576,43 @@ const ApplicationFormContent: React.FC<ApplicationFormProps> = ({ onSubmit, onCa
               </div>
             )}
             
-            {paymentError && (
-              <div className="text-red-600 text-sm bg-red-50 p-3 rounded flex items-center">
-                <span className="font-bold mr-2">Error:</span> {paymentError}
-              </div>
-            )}
           </fieldset>
+          )}
 
-          <div className="pt-6 flex items-center justify-end space-x-4 border-t">
-            <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>
-              Cancel
-            </Button>
-            <Button type="submit" isLoading={isSubmitting}>
-              Create Account & Submit Application
-            </Button>
+          {paymentError && (
+            <div className="text-red-600 text-sm bg-red-50 p-3 rounded flex items-center">
+              <span className="font-bold mr-2">Error:</span> {paymentError}
+            </div>
+          )}
+
+          <div className="pt-6 flex items-center justify-between border-t">
+            <div>
+              <Button 
+                type="button"
+                variant="outline" 
+                onClick={() => setShowContactModal(true)}
+                className="flex items-center text-gray-600 hover:text-black"
+                disabled={isSubmitting}
+              >
+                <Mail className="w-4 h-4 mr-2" />
+                Contact Us
+              </Button>
+            </div>
+            <div className="flex space-x-4">
+              <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>
+                Cancel
+              </Button>
+              <Button type="submit" isLoading={isSubmitting}>
+                Create Account & Submit Application
+              </Button>
+            </div>
           </div>
         </form>
       </div>
+
+      {showContactModal && (
+        <ContactAdminModal onClose={() => setShowContactModal(false)} />
+      )}
     </div>
   );
 };

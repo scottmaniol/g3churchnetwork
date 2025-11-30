@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X } from 'lucide-react';
+import { X, Mail } from 'lucide-react';
 import { Button } from './Button';
+import { ContactAdminModal } from './ContactAdminModal';
 
 interface RequirementsModalProps {
   isOpen: boolean;
@@ -15,6 +16,7 @@ export const RequirementsModal: React.FC<RequirementsModalProps> = ({
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const [scrolledToBottom, setScrolledToBottom] = useState(false);
+  const [showContactModal, setShowContactModal] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -126,16 +128,32 @@ export const RequirementsModal: React.FC<RequirementsModalProps> = ({
           </div>
 
           {/* Footer */}
-          <div className="bg-gray-50 px-6 py-4 flex items-center justify-end space-x-3">
-            <Button variant="outline" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button onClick={onContinue} disabled={!scrolledToBottom}>
-              Continue to Application
-            </Button>
+          <div className="bg-gray-50 px-6 py-4 flex items-center justify-between">
+            <div>
+              <Button 
+                variant="outline" 
+                onClick={() => setShowContactModal(true)}
+                className="flex items-center text-gray-600 hover:text-black"
+              >
+                <Mail className="w-4 h-4 mr-2" />
+                Contact Us
+              </Button>
+            </div>
+            <div className="flex space-x-3">
+              <Button variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button onClick={onContinue} disabled={!scrolledToBottom}>
+                Continue to Application
+              </Button>
+            </div>
           </div>
         </div>
       </div>
+      
+      {showContactModal && (
+        <ContactAdminModal onClose={() => setShowContactModal(false)} />
+      )}
     </div>
   );
 };
