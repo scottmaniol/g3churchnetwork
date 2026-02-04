@@ -1,4 +1,5 @@
 import React, { useState, useEffect, Suspense, lazy } from 'react';
+import { Routes, Route, useNavigate, useLocation, useParams, Navigate } from 'react-router-dom';
 import { AppView, ChurchApplication, ApplicationStatus } from './types';
 import { Button as MainButton } from './components/Button';
 import { ArrowRight, Lock, Menu, X, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
@@ -15,16 +16,17 @@ const JobDetail = lazy(() => import('./components/JobDetail').then(module => ({ 
 const JobApplicationModal = lazy(() => import('./components/JobApplicationModal').then(module => ({ default: module.JobApplicationModal })));
 const ChurchDetailModal = lazy(() => import('./components/ChurchDetailModal').then(module => ({ default: module.ChurchDetailModal })));
 const ContactAdminModal = lazy(() => import('./components/ContactAdminModal').then(module => ({ default: module.ContactAdminModal })));
-import { 
-  subscribeToPublicApplications, 
-  submitApplication, 
-  isFirebaseConfigured, 
+import {
+  subscribeToPublicApplications,
+  submitApplication,
+  isFirebaseConfigured,
   getProjectId,
   createChurchAccount,
   auth,
   onAuthStateChanged,
   updateChurchProfile
 } from './services/firebase';
+
 const LoadingFallback = () => (
   <div className="flex items-center justify-center min-h-[50vh]">
     <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
@@ -32,10 +34,17 @@ const LoadingFallback = () => (
   </div>
 );
 
+// Wrapper for JobDetail to extract params
+const JobDetailWrapper = ({ onBack, onApplyClick }: { onBack: () => void, onApplyClick: (jobId: string) => void }) => {
+  const { jobId } = useParams<{ jobId: string }>();
+  if (!jobId) return <Navigate to="/jobs" replace />;
+  return <JobDetail jobId={jobId} onBack={onBack} onApplyClick={onApplyClick} />;
+};
+
 const App: React.FC = () => {
-  const [view, setView] = useState<AppView>(AppView.HOME);
+  const navigate = useNavigate();
+  const location = useLocation();
   const [publicApplications, setPublicApplications] = useState<ChurchApplication[]>([]);
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [showJobApplicationModal, setShowJobApplicationModal] = useState(false);
   const [currentJobForApplication, setCurrentJobForApplication] = useState<{ jobId: string; jobTitle: string; churchId: string; } | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -43,7 +52,7 @@ const App: React.FC = () => {
   const [showRequirementsModal, setShowRequirementsModal] = useState(false);
   const [showContactModal, setShowContactModal] = useState(false);
   const [selectedChurchForModal, setSelectedChurchForModal] = useState<ChurchApplication | null>(null);
-  
+
   // Notification State
   const [notification, setNotification] = useState<{
     message: React.ReactNode;
@@ -53,16 +62,6 @@ const App: React.FC = () => {
 
   // Check Configuration on Mount
   useEffect(() => {
-    const path = window.location.pathname;
-    const params = new URLSearchParams(window.location.search);
-    
-    if (path === '/map') {
-      setView(AppView.MAP);
-    } else if (params.has('promo')) {
-      // If promo code is present, go straight to application
-      setView(AppView.APPLY);
-    }
-    
     if (!isFirebaseConfigured()) {
       setNotification({
         message: "SETUP REQUIRED: Update services/firebase.ts with your Firebase Project Config.",
@@ -87,10 +86,10 @@ const App: React.FC = () => {
 
   // Redirect to dashboard if on login page and already logged in
   useEffect(() => {
-    if (churchUserId && view === AppView.CHURCH_LOGIN) {
-      setView(AppView.CHURCH_DASHBOARD);
+    if (churchUserId && location.pathname === '/login') {
+      navigate('/dashboard');
     }
-  }, [churchUserId, view]);
+  }, [churchUserId, location.pathname, navigate]);
 
   // Subscribe to Public (Approved) Data for Map and Home
   useEffect(() => {
@@ -103,15 +102,14 @@ const App: React.FC = () => {
   }, []);
 
   const handleJobClick = (jobId: string) => {
-    setSelectedJobId(jobId);
-    setView(AppView.JOB_DETAIL);
+    navigate(`/jobs/${jobId}`);
   };
 
   const handleApplyForJob = async (jobId: string) => {
     // Fetch job details to get jobTitle and churchId for the modal
     const { getJobListing } = await import('./services/firebase');
     const job = await getJobListing(jobId);
-    
+
     if (job) {
       setCurrentJobForApplication({
         jobId: job.id,
@@ -128,71 +126,40 @@ const App: React.FC = () => {
     }
   };
 
-  const navigateTo = (newView: AppView) => {
-    // Show requirements modal before applying
-    if (newView === AppView.APPLY) {
-      setShowRequirementsModal(true);
-      setMobileMenuOpen(false);
-      return;
-    }
-    
-    // Clear selected job when navigating away from job views
-    if (newView !== AppView.JOB_DETAIL && newView !== AppView.JOB_BOARD) {
-      setSelectedJobId(null);
-    }
-
-    setView(newView);
+  const handleJoinClick = () => {
+    setShowRequirementsModal(true);
     setMobileMenuOpen(false);
   };
 
   const handleContinueToApplication = () => {
     setShowRequirementsModal(false);
-    setView(AppView.APPLY);
+    navigate('/apply');
   };
 
   const handleCloseModal = () => {
     setShowRequirementsModal(false);
   };
 
-  const handleApplicationSubmit = async (appData: Omit<ChurchApplication, 'id'>, password: string) => {
+  const handleApplicationSubmit = async (appData: Omit<ChurchApplication, 'id'>) => {
     setNotification(null);
     try {
-      // Create Firebase auth account
-      const userCredential = await createChurchAccount(appData.applicantEmail, password);
-      const userId = userCredential.user.uid;
+      // Submit application to Firestore (no Auth account creation yet)
+      await submitApplication(appData);
 
-      // Add userId to application data
-      const applicationWithUserId = {
-        ...appData,
-        userId
-      };
-
-      // Submit application to Firestore
-      await submitApplication(applicationWithUserId);
-
-      setView(AppView.HOME);
+      navigate('/');
       setNotification({
-        message: "Account created and application submitted! You can now log in to manage your profile.",
+        message: "Application submitted successfully! We will review your application and contact you soon via email.",
         type: 'success'
       });
       setTimeout(() => setNotification(null), 7000);
     } catch (error: any) {
       console.error("Error submitting application:", error);
-      
+
       const projectId = getProjectId();
       let errorMessage = "Error submitting application.";
       let details = error.message;
 
-      if (error.code === 'auth/email-already-in-use') {
-        errorMessage = "Email Already in Use";
-        details = "An account with this email already exists. Please use a different email or sign in.";
-      } else if (error.code === 'auth/invalid-email') {
-        errorMessage = "Invalid Email";
-        details = "Please provide a valid email address.";
-      } else if (error.code === 'auth/weak-password') {
-        errorMessage = "Weak Password";
-        details = "Password should be at least 6 characters.";
-      } else if (error.code === 'permission-denied') {
+      if (error.code === 'permission-denied') {
         errorMessage = "Permission Denied (Security Rules).";
         details = `Ensure your Firestore Rules allow 'create' for public users.\n\nProject ID: ${projectId}`;
       } else if (error.code === 'unavailable') {
@@ -218,12 +185,12 @@ const App: React.FC = () => {
 
   const handleChurchLogin = (userId: string) => {
     setChurchUserId(userId);
-    setView(AppView.CHURCH_DASHBOARD);
+    navigate('/dashboard');
   };
 
   const handleChurchLogout = () => {
     setChurchUserId(null);
-    setView(AppView.HOME);
+    navigate('/');
   };
 
   const handleShowChurchDetails = async (churchId: string) => {
@@ -248,13 +215,13 @@ const App: React.FC = () => {
         <div className="flex justify-between h-[106px] items-center">
           <div className="flex items-center gap-3">
             <a href="https://g3min.org" target="_blank" rel="noopener noreferrer" className="flex items-center cursor-pointer">
-               <img 
-                src="https://firebasestorage.googleapis.com/v0/b/g3-church-network.firebasestorage.app/o/images%2Fg3_logo.png?alt=media" 
-                alt="G3 Church Network" 
-                className="w-[250px] h-[72px] object-contain" 
+              <img
+                src="https://firebasestorage.googleapis.com/v0/b/g3-church-network.firebasestorage.app/o/images%2Fg3_logo.png?alt=media"
+                alt="G3 Church Network"
+                className="w-[250px] h-[72px] object-contain"
               />
             </a>
-            
+
             {/* Development Mode Indicator */}
             {import.meta.env.DEV && (
               <div className="flex items-center gap-2 bg-orange-100 border border-orange-300 text-orange-800 px-3 py-1.5 rounded-full text-xs font-semibold">
@@ -263,22 +230,22 @@ const App: React.FC = () => {
               </div>
             )}
           </div>
-          
+
           {/* Desktop Nav */}
           <div className="hidden md:flex space-x-8 items-center">
-            <button onClick={() => navigateTo(AppView.MAP)} className="text-gray-600 hover:text-gray-900 font-medium transition text-[14px] uppercase tracking-wider">
+            <button onClick={() => navigate('/map')} className="text-gray-600 hover:text-gray-900 font-medium transition text-[14px] uppercase tracking-wider">
               Network Map
             </button>
-            <button onClick={() => navigateTo(AppView.JOB_BOARD)} className="text-gray-600 hover:text-gray-900 font-medium transition text-[14px] uppercase tracking-wider">
+            <button onClick={() => navigate('/jobs')} className="text-gray-600 hover:text-gray-900 font-medium transition text-[14px] uppercase tracking-wider">
               Job Board
             </button>
-            <button 
-              onClick={() => navigateTo(churchUserId ? AppView.CHURCH_DASHBOARD : AppView.CHURCH_LOGIN)} 
+            <button
+              onClick={() => navigate(churchUserId ? '/dashboard' : '/login')}
               className="text-gray-600 hover:text-gray-900 font-medium transition text-[14px] uppercase tracking-wider"
             >
               Church Portal
             </button>
-            <MainButton variant="primary" onClick={() => navigateTo(AppView.APPLY)} className="py-2 px-4 text-[14px] uppercase tracking-wider">
+            <MainButton variant="primary" onClick={handleJoinClick} className="py-2 px-4 text-[14px] uppercase tracking-wider">
               Join the Network
             </MainButton>
           </div>
@@ -295,27 +262,27 @@ const App: React.FC = () => {
       {/* Mobile Nav */}
       {mobileMenuOpen && (
         <div className="md:hidden bg-white border-t px-2 pt-2 pb-3 space-y-1 sm:px-3 shadow-lg">
-          <button onClick={() => navigateTo(AppView.MAP)} className="block px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-50 text-gray-600 w-full text-left uppercase tracking-wider">Network Map</button>
-          <button onClick={() => navigateTo(AppView.JOB_BOARD)} className="block px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-50 text-gray-600 w-full text-left uppercase tracking-wider">Job Board</button>
-          <button onClick={() => navigateTo(churchUserId ? AppView.CHURCH_DASHBOARD : AppView.CHURCH_LOGIN)} className="block px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-50 text-gray-600 w-full text-left uppercase tracking-wider">Church Portal</button>
-          <button onClick={() => navigateTo(AppView.APPLY)} className="block px-3 py-2 rounded-md text-sm font-medium bg-gray-50 text-gray-900 w-full text-left mt-4 uppercase tracking-wider">Apply Now</button>
+          <button onClick={() => { navigate('/map'); setMobileMenuOpen(false); }} className="block px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-50 text-gray-600 w-full text-left uppercase tracking-wider">Network Map</button>
+          <button onClick={() => { navigate('/jobs'); setMobileMenuOpen(false); }} className="block px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-50 text-gray-600 w-full text-left uppercase tracking-wider">Job Board</button>
+          <button onClick={() => { navigate(churchUserId ? '/dashboard' : '/login'); setMobileMenuOpen(false); }} className="block px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-50 text-gray-600 w-full text-left uppercase tracking-wider">Church Portal</button>
+          <button onClick={handleJoinClick} className="block px-3 py-2 rounded-md text-sm font-medium bg-gray-50 text-gray-900 w-full text-left mt-4 uppercase tracking-wider">Apply Now</button>
         </div>
       )}
     </nav>
   );
 
-  const renderHome = () => (
+  const HomeView = () => (
     <div className="bg-white">
       {/* Hero */}
       <div className="relative bg-black overflow-hidden">
         <div className="absolute inset-0">
-          <img 
-            className="w-full h-full object-cover opacity-70" 
-            src="https://firebasestorage.googleapis.com/v0/b/g3-church-network.firebasestorage.app/o/images%2FChurch-White-Black-G3-scaled.jpeg?alt=media" 
-            alt="Congregation" 
+          <img
+            className="w-full h-full object-cover"
+            src="https://firebasestorage.googleapis.com/v0/b/g3-church-network.firebasestorage.app/o/images%2FChurch-White-Black-G3-scaled.jpeg?alt=media"
+            alt="Congregation"
           />
-          <div className="absolute inset-0 bg-[#ba9150] opacity-20 mix-blend-multiply" />
-          <div className="absolute inset-0 bg-gradient-to-t from-black to-transparent mix-blend-multiply" />
+          <div className="absolute inset-0 bg-black opacity-40" />
+          <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent" />
         </div>
         <div className="relative max-w-7xl mx-auto py-24 px-4 sm:py-32 sm:px-6 lg:px-8">
           <h1 className="text-4xl font-serif font-extrabold tracking-tight text-white sm:text-5xl lg:text-6xl">
@@ -325,13 +292,13 @@ const App: React.FC = () => {
             The G3 Church Network is a global fellowship of Reformed Baptist churches committed to sound doctrine, expository preaching, and the sovereignty of God in all things.
           </p>
           <div className="mt-10 flex space-x-4">
-            <MainButton onClick={() => navigateTo(AppView.APPLY)}>
+            <MainButton onClick={handleJoinClick}>
               Join the Network
             </MainButton>
-            <MainButton 
-              variant="outline" 
-              className="bg-white text-black border-white hover:bg-gray-100 transition-transform hover:scale-105" 
-              onClick={() => navigateTo(AppView.MAP)}
+            <MainButton
+              variant="outline"
+              className="bg-white text-black border-white hover:bg-gray-100 transition-transform hover:scale-105"
+              onClick={() => navigate('/map')}
             >
               View Map <ArrowRight className="ml-2 w-4 h-4" />
             </MainButton>
@@ -368,7 +335,7 @@ const App: React.FC = () => {
               <div className="relative">
                 <dt>
                   <div className="absolute flex items-center justify-center h-12 w-12 rounded-md bg-black text-white">
-                     <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                   </div>
@@ -426,7 +393,7 @@ const App: React.FC = () => {
               <div className="relative">
                 <dt>
                   <div className="absolute flex items-center justify-center h-12 w-12 rounded-md bg-black text-white">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-dollar-sign"><line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-dollar-sign"><line x1="12" x2="12" y1="2" y2="22" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>
                   </div>
                   <p className="ml-16 text-lg leading-6 font-medium text-gray-900">Annual Dues</p>
                 </dt>
@@ -438,7 +405,7 @@ const App: React.FC = () => {
               <div className="relative">
                 <dt>
                   <div className="absolute flex items-center justify-center h-12 w-12 rounded-md bg-black text-white">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-church"><path d="m18 7 4 2v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9l4-2"/><path d="M14 22v-4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v4"/><path d="M18 22V5l-6-3-6 3v17"/><path d="M12 7v5"/><path d="M10 9h4"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-church"><path d="m18 7 4 2v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9l4-2" /><path d="M14 22v-4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v4" /><path d="M18 22V5l-6-3-6 3v17" /><path d="M12 7v5" /><path d="M10 9h4" /></svg>
                   </div>
                   <p className="ml-16 text-lg leading-6 font-medium text-gray-900">Ecclesiology</p>
                 </dt>
@@ -452,6 +419,8 @@ const App: React.FC = () => {
       </div>
     </div>
   );
+
+  const hideChrome = ['/map', '/login', '/dashboard'].includes(location.pathname) || location.pathname.startsWith('/dashboard') || location.pathname.startsWith('/admin');
 
   return (
     <div className="min-h-screen font-sans bg-gray-50 flex flex-col">
@@ -468,12 +437,11 @@ const App: React.FC = () => {
 
       {/* Notification Toast */}
       {notification && (
-        <div 
-          className={`fixed top-24 right-4 max-w-sm w-full bg-white shadow-2xl rounded-lg overflow-hidden border-l-4 z-50 animate-in slide-in-from-right duration-300 ${
-            notification.type === 'success' ? 'border-green-600' : 'border-red-600'
-          }`}
+        <div
+          className={`fixed top-24 right-4 max-w-sm w-full bg-white shadow-2xl rounded-lg overflow-hidden border-l-4 z-50 animate-in slide-in-from-right duration-300 ${notification.type === 'success' ? 'border-green-600' : 'border-red-600'
+            }`}
         >
-           <div className="p-4 flex items-start">
+          <div className="p-4 flex items-start">
             <div className="flex-shrink-0">
               {notification.type === 'success' ? (
                 <CheckCircle className="h-5 w-5 text-green-600" />
@@ -504,66 +472,87 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Main Content Area */}
-      {view !== AppView.MAP && view !== AppView.CHURCH_LOGIN && view !== AppView.CHURCH_DASHBOARD && renderHeader()}
-      
+      {/* Header */}
+      {!hideChrome && renderHeader()}
+
       <main className="flex-grow">
-        {view === AppView.HOME && renderHome()}
-        
         <Suspense fallback={<LoadingFallback />}>
-          {view === AppView.APPLY && (
-            <ApplicationForm 
-              onSubmit={handleApplicationSubmit}
-              onCancel={() => navigateTo(AppView.HOME)}
+          <Routes>
+            <Route path="/" element={<HomeView />} />
+            <Route
+              path="/apply"
+              element={
+                <ApplicationForm
+                  onSubmit={handleApplicationSubmit}
+                  onCancel={() => navigate('/')}
+                />
+              }
             />
-          )}
-          
-          {view === AppView.ADMIN && (
-            <AdminDashboard 
-              onBack={() => navigateTo(AppView.HOME)}
+            <Route
+              path="/admin"
+              element={
+                <AdminDashboard
+                  onBack={() => navigate('/')}
+                />
+              }
             />
-          )}
-          
-          {view === AppView.MAP && (
-            <WorldMap 
-              churches={publicApplications}
-              onBack={() => navigateTo(AppView.HOME)}
-              onJoinClick={() => navigateTo(AppView.APPLY)}
-              onJobClick={handleJobClick}
+            <Route
+              path="/map"
+              element={
+                <WorldMap
+                  churches={publicApplications}
+                  onBack={() => navigate('/')}
+                  onJoinClick={handleJoinClick}
+                  onJobClick={handleJobClick}
+                />
+              }
             />
-          )}
-
-          {view === AppView.CHURCH_LOGIN && (
-            <ChurchLogin
-              onBack={() => navigateTo(AppView.HOME)}
-              onLoginSuccess={handleChurchLogin}
+            <Route
+              path="/login"
+              element={
+                <ChurchLogin
+                  onBack={() => navigate('/')}
+                  onLoginSuccess={handleChurchLogin}
+                />
+              }
             />
-          )}
-
-          {view === AppView.CHURCH_DASHBOARD && churchUserId && (
-            <ChurchDashboard
-              userId={churchUserId}
-              onBack={() => navigateTo(AppView.HOME)}
-              onLogout={handleChurchLogout}
+            <Route
+              path="/dashboard"
+              element={
+                churchUserId ? (
+                  <ChurchDashboard
+                    userId={churchUserId}
+                    onBack={() => navigate('/')}
+                    onLogout={handleChurchLogout}
+                  />
+                ) : (
+                  <Navigate to="/login" replace />
+                )
+              }
             />
-          )}
-
-          {view === AppView.JOB_BOARD && (
-            <JobBoard
-              onJobClick={handleJobClick}
-              onApplyClick={handleApplyForJob}
-              onBack={() => navigateTo(AppView.HOME)}
-              onChurchClick={handleShowChurchDetails}
+            <Route
+              path="/jobs"
+              element={
+                <JobBoard
+                  onJobClick={handleJobClick}
+                  onApplyClick={handleApplyForJob}
+                  onBack={() => navigate('/')}
+                  onChurchClick={handleShowChurchDetails}
+                />
+              }
             />
-          )}
-
-          {view === AppView.JOB_DETAIL && selectedJobId && (
-            <JobDetail
-              jobId={selectedJobId}
-              onBack={() => setView(AppView.JOB_BOARD)}
-              onApplyClick={handleApplyForJob}
+            <Route
+              path="/jobs/:jobId"
+              element={
+                <JobDetailWrapper
+                  onBack={() => navigate('/jobs')}
+                  onApplyClick={handleApplyForJob}
+                />
+              }
             />
-          )}
+            {/* Fallback */}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
         </Suspense>
       </main>
 
@@ -602,22 +591,23 @@ const App: React.FC = () => {
         </Suspense>
       )}
 
-      {view !== AppView.MAP && view !== AppView.CHURCH_LOGIN && view !== AppView.CHURCH_DASHBOARD && view !== AppView.JOB_BOARD && view !== AppView.JOB_DETAIL && (
+      {/* Footer */}
+      {!hideChrome && (
         <footer className="bg-black text-white py-12">
           <div className="max-w-7xl mx-auto px-4 text-center">
             <div className="font-serif text-2xl font-bold mb-4">G3 Church Network</div>
             <p className="text-gray-400 mb-4">© {new Date().getFullYear()} G3 Ministries. All rights reserved.</p>
-            
+
             <div className="flex flex-col items-center gap-2">
-              <button 
+              <button
                 onClick={() => setShowContactModal(true)}
                 className="text-gray-400 hover:text-white text-sm transition"
               >
                 Contact Us
               </button>
-              
-              <button 
-                onClick={() => navigateTo(AppView.ADMIN)} 
+
+              <button
+                onClick={() => navigate('/admin')}
                 className="text-gray-500 hover:text-gray-300 text-sm transition flex items-center gap-1"
               >
                 <Lock className="w-3 h-3" /> Admin

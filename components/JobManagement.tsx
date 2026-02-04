@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { JobListing, JobApplication, ChurchApplication } from '../types';
 import { Button } from './Button';
 import { Plus, Edit, Trash2, X, Briefcase, MapPin, Calendar, Users, Eye, Mail, Link as LinkIcon, Download, Loader2 } from 'lucide-react';
-import { createJobListing, getJobListingsByChurch, updateJobListing, deleteJobListing, subscribeToJobApplicationsByChurch, uploadResume } from '../services/firebase';
+import { createJobListing, getJobListingsByChurch, updateJobListing, deleteJobListing, subscribeToJobApplicationsByChurch, uploadResume, deleteJobApplication } from '../services/firebase';
 
 interface JobManagementProps {
   churchId: string;
@@ -76,9 +76,9 @@ export const JobManagement: React.FC<JobManagementProps> = ({ churchId, churchNa
       jobType,
       location,
       description,
-      requirements: requirements || undefined,
-      salary: salary || undefined,
-      experienceLevel: experienceLevel || undefined,
+      ...(requirements.trim() ? { requirements: requirements.trim() } : {}),
+      ...(salary.trim() ? { salary: salary.trim() } : {}),
+      ...(experienceLevel.trim() ? { experienceLevel: experienceLevel.trim() } : {}),
       ...(expirationDate ? { expirationDate: new Date(expirationDate).toISOString() } : {}),
       ...(churchLogoUrl ? { churchLogoUrl } : {}), // Only include if defined
     };
@@ -392,7 +392,7 @@ export const JobManagement: React.FC<JobManagementProps> = ({ churchId, churchNa
                         <Button variant="danger" onClick={() => handleDeleteJob(job.id)} className="flex items-center gap-2">
                           <Trash2 className="w-4 h-4" /> Delete
                         </Button>
-                        <Button variant="secondary" onClick={() => setViewingApplicationsForJobId(job.id)} className="flex items-center gap-2">
+                        <Button variant="secondary" onClick={() => { setViewingApplicationsForJobId(job.id); setActiveTab('applications'); }} className="flex items-center gap-2">
                           <Users className="w-4 h-4" /> <span>View Applications ({getApplicationsForJob(job.id).length})</span>
                         </Button>
                       </div>
@@ -492,6 +492,19 @@ const JobApplicationsList: React.FC<JobApplicationsListProps> = ({ job, applicat
     window.open(url, '_blank');
   };
 
+  const handleDeleteApplication = async (applicationId: string) => {
+    if (confirm('Are you sure you want to delete this application? This action cannot be undone.')) {
+      try {
+        await deleteJobApplication(applicationId);
+        alert('Application deleted successfully!');
+        // Note: The parent component will automatically re-render with the updated application list
+      } catch (err) {
+        console.error("Error deleting application:", err);
+        alert('Failed to delete application. Please try again.');
+      }
+    }
+  };
+
   return (
     <div className="bg-white p-6 rounded-lg shadow-md border border-blue-200">
       <div className="flex justify-between items-center mb-6">
@@ -510,9 +523,14 @@ const JobApplicationsList: React.FC<JobApplicationsListProps> = ({ job, applicat
         <div className="space-y-4">
           {applications.map(app => (
             <div key={app.id} className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors">
-              <div className="flex justify-between items-center mb-2">
-                <h4 className="text-lg font-semibold text-gray-900">{app.applicantName}</h4>
-                <span className="text-sm text-gray-500">{new Date(app.appliedAt).toLocaleDateString()}</span>
+              <div className="flex justify-between items-start mb-2">
+                <div>
+                  <h4 className="text-lg font-semibold text-gray-900">{app.applicantName}</h4>
+                  <span className="text-sm text-gray-500">{new Date(app.appliedAt).toLocaleDateString()}</span>
+                </div>
+                <Button variant="danger" onClick={() => handleDeleteApplication(app.id)} className="px-3 py-2">
+                  <Trash2 className="w-4 h-4" />
+                </Button>
               </div>
               <p className="text-gray-700 mb-3">{app.message}</p>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-gray-600">

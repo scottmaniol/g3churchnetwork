@@ -66,8 +66,24 @@ export const WorldMap: React.FC<WorldMapProps> = ({ churches, onBack, onJoinClic
     const isZipCodeSearch = /^\d{5}(-\d{4})?$/.test(searchQuery.trim());
 
     const filtered = activeChurches.filter(church => {
-      // Text search filter (only if not a zip code search)
-      if (searchQuery && !isZipCodeSearch) {
+      // If location search is active (zipCoords is set), only use radius filter
+      if (zipCoords) {
+        const distance = calculateDistance(
+          zipCoords.lat,
+          zipCoords.lng,
+          church.coordinates!.lat,
+          church.coordinates!.lng
+        );
+        return distance <= parseInt(radius);
+      }
+
+      // If it's a zip code search but hasn't been geocoded yet, return no results
+      if (searchQuery && isZipCodeSearch && !zipCoords) {
+        return false;
+      }
+
+      // Text search filter (only when no location search is active)
+      if (searchQuery && !isZipCodeSearch && !zipCoords) {
         const query = searchQuery.toLowerCase();
         const matchesSearch = (
           church.churchName.toLowerCase().includes(query) ||
@@ -76,17 +92,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({ churches, onBack, onJoinClic
           (church.churchAddress?.state && church.churchAddress.state.toLowerCase().includes(query))
         );
         if (!matchesSearch) return false;
-      }
-
-      // Radius filter
-      if (zipCoords && radius) {
-        const distance = calculateDistance(
-          zipCoords.lat,
-          zipCoords.lng,
-          church.coordinates!.lat,
-          church.coordinates!.lng
-        );
-        return distance <= parseInt(radius);
       }
 
       return true;

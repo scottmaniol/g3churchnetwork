@@ -128,8 +128,6 @@ export interface ChurchApplication {
   lastPaymentDate?: string;
   nextDueDate?: string;
   promoCodeUsed?: string;
-  isManuallyDelinquent?: boolean; // Admin can manually mark as delinquent
-  duesExempt?: boolean; // Admin can mark church as exempt from dues - always active, no delinquency checks
 
   // Doctrinal Info
   pluralityOfElders: 'Yes' | 'No' | 'No, but working toward it.' | '';
@@ -160,15 +158,6 @@ export interface EmailTemplate {
   subject: string;
   body: string;
   type: EmailType;
-}
-
-// Network Benefits Configuration
-export interface NetworkBenefit {
-  id: string; // 'pastors_forum', 'discounts', 'job_portal', 'map', 'resources'
-  title: string;
-  description: string;
-  linkUrl?: string;
-  linkText?: string;
 }
 
 // User Profile for Firebase Auth Users (Admins and Church Users)

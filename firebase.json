@@ -28,11 +28,12 @@
       ]
     }
   ],
-  "firestore": [
-    {
-      "database": "g3network",
-      "rules": "firestore.rules",
-      "indexes": "firestore.indexes.json"
-    }
-  ]
+  "firestore": {
+    "databaseId": "g3network",
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  }
 }

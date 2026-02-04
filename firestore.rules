@@ -30,6 +30,11 @@ service cloud.firestore {
       allow read: if resource.data.status == 'APPROVED'; // Publicly readable if approved
       allow read: if request.auth != null; // Authenticated users can read
       
+      // Allow unauthenticated users to CREATE applications (new workflow)
+      // Debug: Nuclear option to verify deployment to named database
+      allow create: if true;
+      
+      // Allow authenticated users to create applications with their userId (legacy/admin)
       allow create: if request.auth != null 
                     && request.resource.data.status == 'PENDING'
                     && request.resource.data.userId == request.auth.uid;
@@ -44,7 +49,8 @@ service cloud.firestore {
 
     // Settings collection rules
     match /settings/{documentId} {
-      allow read, write: if isAdmin();
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
     }
 
     // User Profiles collection rules
@@ -69,13 +75,16 @@ service cloud.firestore {
 
     // Church Events collection rules
     match /churchEvents/{eventId} {
-      allow read: if isAdmin();
-      allow read: if request.auth != null 
-                  && request.resource.data.churchId != null
-                  && isChurchAdminOwner(request.resource.data.churchId);
+      // Admins can do everything (including queries with where clauses)
+      allow read, write: if isAdmin();
       
+      // Any authenticated user can create events (tracking)
       allow create: if request.auth != null;
-      allow create, update, delete: if isAdmin();
+      
+      // Church owners can read their own events (document-level only)
+      allow get: if request.auth != null 
+                 && resource.data.churchId != null
+                 && isChurchAdminOwner(resource.data.churchId);
     }
 
     // Job Listings collection rules
@@ -97,7 +106,7 @@ service cloud.firestore {
     match /jobApplications/{applicationId} {
       allow create: if true;
 
-      allow read, update: if request.auth != null && isChurchAdminOwner(resource.data.churchId);
+      allow read, update, delete: if request.auth != null && isChurchAdminOwner(resource.data.churchId);
       
       allow read, update, delete: if isAdmin();
     }

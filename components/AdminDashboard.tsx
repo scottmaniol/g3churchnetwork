@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ChurchApplication, ApplicationStatus, ChurchLeader, ChurchGathering, EmailTemplate, EmailType, AdminUser, UserProfile, JobListing } from '../types';
+import { ChurchApplication, ApplicationStatus, ChurchLeader, ChurchGathering, EmailTemplate, EmailType, AdminUser, UserProfile, JobListing, NetworkBenefit } from '../types';
 import { PromoCodeManager } from './PromoCodeManager';
 import { Button } from './Button';
-import { Check, X, MapPin, Globe, ExternalLink, ArrowLeft, LogOut, Lock, User as UserIcon, BookOpen, ShieldCheck, Trash2, Eye, AlertTriangle, Edit, Download, Upload, Settings, RefreshCw, Ban, Slash, PlusCircle, BarChart3, Mail, Send, Clock, Share2, Briefcase } from 'lucide-react';
-import { auth, loginWithEmail, registerWithEmail, logout, subscribeToAllApplications, updateApplicationStatus, User, onAuthStateChanged, deleteChurchApplication, updateChurchProfile, submitApplication, updateChurchCoordinates, uploadChurchLogo, sendEmail, saveEmailTemplate, getEmailTemplate, resendSystemEmail, approveApplication, createChurchUserAndSendResetEmailClient, backfillGeocodes, regeocodeAddress, getAllUsers, setAdminRole, removeAdminRole, createAdminUser, getUserProfile, updateUserProfileRole, deleteUser, subscribeToAllChurchStatistics, subscribeToAllJobs, deleteJobListing } from '../services/firebase';
+import { Check, X, MapPin, Globe, ExternalLink, ArrowLeft, LogOut, Lock, User as UserIcon, BookOpen, ShieldCheck, Trash2, Eye, AlertTriangle, Edit, Download, Upload, Settings, RefreshCw, Ban, Slash, PlusCircle, BarChart3, Mail, Send, Clock, Share2, Briefcase, Star } from 'lucide-react';
+import { auth, loginWithEmail, registerWithEmail, logout, subscribeToAllApplications, updateApplicationStatus, User, onAuthStateChanged, deleteChurchApplication, updateChurchProfile, submitApplication, updateChurchCoordinates, uploadChurchLogo, sendEmail, saveEmailTemplate, getEmailTemplate, resendSystemEmail, approveApplication, provisionallyApproveApplication, createChurchUserAndSendResetEmailClient, backfillGeocodes, regeocodeAddress, getAllUsers, setAdminRole, removeAdminRole, createAdminUser, getUserProfile, updateUserProfileRole, deleteUser, changeUserPassword, sendPasswordResetEmail, subscribeToAllChurchStatistics, subscribeToAllJobs, deleteJobListing, getNetworkBenefits, saveNetworkBenefits, clearTestStripeData, forceCreateAdminProfile } from '../services/firebase';
+import ReactQuill from 'react-quill';
+import 'react-quill/dist/quill.snow.css';
 
 interface AdminDashboardProps {
   onBack: () => void;
@@ -16,7 +18,124 @@ const InfoRow: React.FC<{ label: string; value?: string | null }> = ({ label, va
   </div>
 );
 
-type AdminView = 'member-pending' | 'member-active' | 'member-leaders' | 'member-rejected' | 'statistics' | 'jobs' | 'email' | 'settings-email' | 'settings-application' | 'settings-content' | 'settings-users' | 'settings-promo-codes';
+type AdminView = 'member-pending' | 'member-provisional' | 'member-active' | 'member-delinquent' | 'member-leaders' | 'member-rejected' | 'statistics' | 'jobs' | 'email' | 'settings-email' | 'settings-application' | 'settings-content' | 'settings-users' | 'settings-promo-codes' | 'settings-benefits';
+
+// Separate component for delinquent church rows to properly use hooks
+const DelinquentChurchRow: React.FC<{ 
+  app: ChurchApplication; 
+  onViewChurch: (app: ChurchApplication) => void;
+}> = ({ app, onViewChurch }) => {
+  const [emailHistory, setEmailHistory] = React.useState<Array<{ date: string; count: number }>>([]);
+
+  React.useEffect(() => {
+    // Fetch email sent events for this church
+    const fetchEmailHistory = async () => {
+      try {
+        const { collection, query, where, orderBy, getDocs, limit } = await import('firebase/firestore');
+        const { db } = await import('../services/firebase');
+
+        const eventsRef = collection(db, 'churchEvents');
+        const q = query(
+          eventsRef,
+          where('churchId', '==', app.id),
+          where('type', '==', 'email_sent'),
+          where('metadata.emailType', '==', 'dues_delinquent'),
+          orderBy('timestamp', 'desc'),
+          limit(5)
+        );
+
+        const snapshot = await getDocs(q);
+        const events = snapshot.docs.map(doc => ({
+          date: doc.data().timestamp,
+          count: 1
+        }));
+
+        setEmailHistory(events);
+      } catch (error) {
+        // Silently fail - permissions may not be set up yet
+        // Just leave emailHistory empty so it shows "No reminders sent"
+        console.warn('Could not fetch email history (this is expected if permissions are not configured):', error);
+      }
+    };
+
+    fetchEmailHistory();
+  }, [app.id]);
+
+  const nextDueDate = app.nextDueDate ? new Date(app.nextDueDate) : null;
+  const today = new Date();
+  const daysOverdue = nextDueDate ? Math.abs(Math.ceil((today.getTime() - nextDueDate.getTime()) / (1000 * 60 * 60 * 24))) : null;
+
+  return (
+    <tr className="hover:bg-orange-50">
+      <td className="px-6 py-4">
+        <div className="font-medium text-gray-900">{app.churchName}</div>
+        <div className="text-xs text-gray-500">{app.applicantEmail}</div>
+      </td>
+      <td className="px-6 py-4 text-sm text-gray-500">
+        {`${app.churchAddress?.city || ''}, ${app.churchAddress?.state || ''}`}
+      </td>
+      <td className="px-6 py-4">
+        <div className="flex flex-col gap-1">
+          {app.isManuallyDelinquent ? (
+            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 w-fit">
+              <Ban className="w-3 h-3 mr-1" />
+              Manually Marked
+            </span>
+          ) : (
+            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 w-fit">
+              <AlertTriangle className="w-3 h-3 mr-1" />
+              Overdue
+            </span>
+          )}
+        </div>
+      </td>
+      <td className="px-6 py-4 text-sm">
+        {nextDueDate ? (
+          <div className="text-red-600 font-medium">
+            {nextDueDate.toLocaleDateString()}
+            {daysOverdue && daysOverdue > 0 && (
+              <div className="text-xs text-red-500">
+                {daysOverdue} {daysOverdue === 1 ? 'day' : 'days'} overdue
+              </div>
+            )}
+          </div>
+        ) : (
+          <span className="text-gray-400">N/A</span>
+        )}
+      </td>
+      <td className="px-6 py-4 text-sm">
+        {emailHistory.length > 0 ? (
+          <div className="space-y-1">
+            {emailHistory.slice(0, 3).map((event, idx) => (
+              <div key={idx} className="text-xs text-gray-600">
+                <Clock className="w-3 h-3 inline mr-1" />
+                {new Date(event.date).toLocaleDateString()} at{' '}
+                {new Date(event.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </div>
+            ))}
+            {emailHistory.length > 3 && (
+              <div className="text-xs text-gray-400 italic">
+                +{emailHistory.length - 3} more
+              </div>
+            )}
+          </div>
+        ) : (
+          <span className="text-xs text-gray-400 italic">No reminders sent</span>
+        )}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={() => onViewChurch(app)}
+            className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+          >
+            View Profile
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+};
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [applications, setApplications] = useState<ChurchApplication[]>([]);
@@ -28,9 +147,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [viewingChurch, setViewingChurch] = useState<ChurchApplication | null>(null);
   const [deletingChurch, setDeletingChurch] = useState<ChurchApplication | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [showAddChurchModal, setShowAddChurchModal] = useState(false);
   const [currentView, setCurrentView] = useState<AdminView>('statistics');
   const [isProcessingPortalAccount, setIsProcessingPortalAccount] = useState(false); // Moved state up
-  
+  const [resendingProvisionalEmail, setResendingProvisionalEmail] = useState<string | null>(null); // Track which church is being sent an email
+
   // User Management State
   const [allUsers, setAllUsers] = useState<AdminUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
@@ -89,7 +210,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!user) return;
 
     // Validate password if provided
@@ -107,7 +228,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     setIsSavingProfile(true);
     try {
       const { updateEmail, updatePassword } = await import('firebase/auth');
-      
+
       // If email is changing, update it
       if (editEmail && editEmail !== user.email) {
         await updateEmail(user, editEmail);
@@ -125,7 +246,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       setEditEmail('');
       setNewPassword('');
       setConfirmPassword('');
-      
+
       if (!newPassword && (!editEmail || editEmail === user.email)) {
         alert('No changes were made.');
       }
@@ -173,13 +294,63 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     }
   };
 
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!selectedUserForPassword) return;
+
+    if (newUserPassword.length < 6) {
+      alert("Password must be at least 6 characters.");
+      return;
+    }
+
+    if (newUserPassword !== confirmUserPassword) {
+      alert("Passwords do not match.");
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to change the password for ${selectedUserForPassword.email}?`)) {
+      return;
+    }
+
+    setIsChangingPassword(true);
+    try {
+      await changeUserPassword(selectedUserForPassword.uid, newUserPassword);
+      alert(`Password changed successfully for ${selectedUserForPassword.email}!`);
+      setShowChangePasswordModal(false);
+      setSelectedUserForPassword(null);
+      setNewUserPassword('');
+      setConfirmUserPassword('');
+    } catch (error: any) {
+      console.error("Error changing password:", error);
+      alert(`Failed to change password: ${error.message || 'Unknown error'}`);
+    } finally {
+      setIsChangingPassword(false);
+    }
+  };
+
+  const handleSendPasswordReset = async (email: string) => {
+    if (!confirm(`Send a password reset email to ${email}?`)) return;
+
+    setUserActionLoading(email);
+    try {
+      await sendPasswordResetEmail(email);
+      alert(`Password reset email sent to ${email}.`);
+    } catch (error: any) {
+      console.error("Error sending password reset email:", error);
+      alert(`Failed to send password reset email: ${error.message || 'Unknown error'}`);
+    } finally {
+      setUserActionLoading(null);
+    }
+  };
+
   const handleDeleteUser = async (uid: string, email: string) => {
     if (!confirm(`Are you sure you want to permanently delete the user account for ${email}? This action cannot be undone.`)) return;
     setUserActionLoading(uid);
     try {
       // First, find any churches linked to this user and clear their userId
       const linkedChurches = applications.filter(app => app.userId === uid);
-      
+
       if (linkedChurches.length > 0) {
         console.log(`Clearing userId for ${linkedChurches.length} church(es) linked to user ${email}`);
         for (const church of linkedChurches) {
@@ -187,7 +358,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           console.log(`Cleared userId for church: ${church.churchName}`);
         }
       }
-      
+
       // Then delete the user
       await deleteUser(uid);
       alert(`User ${email} has been deleted successfully.${linkedChurches.length > 0 ? ` Portal account removed from ${linkedChurches.length} church(es).` : ''}`);
@@ -253,10 +424,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       subject: 'Action Required: G3 Network Membership Delinquent',
       body: '<p>Dear {{applicantName}},</p><p>We have not received your annual dues payment for <strong>{{churchName}}</strong>. Your membership is now delinquent.</p><p>As per our policy, your church has been temporarily hidden from the network map.</p><p>Please pay your dues immediately via the dashboard to restore your active status.</p><p>Grace and peace,<br>G3 Church Network Team</p>'
     },
-    portal_account_setup: { // Added missing template
+    portal_account_setup: {
       type: 'portal_account_setup',
-      subject: 'G3 Church Network - Set Up Your Portal Account',
-      body: '<p>Dear {{applicantName}},</p><p>Your application for <strong>{{churchName}}</strong> has been approved and your portal account is ready!</p><p>Please click the link below to set your password and access your church dashboard:</p><p><a href="{{resetLink}}">Set Your Password</a></p><p>Grace and peace,<br>G3 Church Network Team</p>'
+      subject: 'Set Up Your G3 Church Network Portal Account',
+      body: '<p>Dear {{applicantName}},</p><p>Your portal account for <strong>{{churchName}}</strong> has been created!</p><p>Please click the link below to set your password and access your church dashboard:</p><p><a href="{{resetLink}}">Set Up Your Account</a></p><p>Once logged in, you can manage your church profile, update information, and access network resources.</p><p>Grace and peace,<br>G3 Church Network Team</p>'
+    },
+    admin_application_notification: {
+      type: 'admin_application_notification',
+      subject: 'New Church Application - {{churchName}}',
+      body: '<p>A new church application has been submitted:</p><p><strong>Church:</strong> {{churchName}}<br><strong>Applicant:</strong> {{applicantName}}<br><strong>Email:</strong> {{applicantEmail}}<br><strong>Location:</strong> {{churchAddress}}</p><p>Please review the application in the admin dashboard.</p>'
+    },
+    application_provisional_approved: {
+      type: 'application_provisional_approved',
+      subject: 'Your G3 Network Application - Payment Required',
+      body: '<p>Dear {{applicantName}},</p><p>Congratulations! Your application for <strong>{{churchName}}</strong> has been provisionally approved.</p><p>To complete your membership, please log in to your portal account and submit your annual network dues payment:</p><p><a href="{{portalLink}}">Access Your Church Portal</a></p><p>Once payment is received, you will gain full access to all network benefits.</p><p>Grace and peace,<br>G3 Church Network Team</p>'
+    },
+    application_fully_approved: {
+      type: 'application_fully_approved',
+      subject: 'Welcome to G3 Church Network - Full Access Granted!',
+      body: '<p>Dear {{applicantName}},</p><p>We are excited to welcome <strong>{{churchName}}</strong> as a full member of the G3 Church Network!</p><p>Your payment has been processed and your church is now listed on our network map. You have full access to all member benefits.</p><p>Log in to your dashboard to explore: <a href="{{portalLink}}">Church Portal</a></p><p>Grace and peace,<br>G3 Church Network Team</p>'
     }
   });
   const [loadingTemplates, setLoadingTemplates] = useState(false);
@@ -272,21 +458,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           'portal_account_setup' // Added missing template type
         ];
         const loadedTemplates = { ...templates };
-        
+        let hasUpdates = false;
+
         for (const type of types) {
           const saved = await getEmailTemplate(type);
           if (saved) {
             loadedTemplates[type] = saved;
+          } else {
+            // Template doesn't exist in Firestore, save the default
+            console.log(`Saving default template for ${type}`);
+            await saveEmailTemplate(loadedTemplates[type]);
+            hasUpdates = true;
           }
         }
+
         setTemplates(loadedTemplates);
+        if (hasUpdates) {
+          console.log('Default templates saved to Firestore');
+        }
       } catch (error) {
         console.error("Error loading templates:", error);
       } finally {
         setLoadingTemplates(false);
       }
     };
-    
+
     if (user) {
       loadTemplates();
     }
@@ -316,18 +512,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       setSavingTemplate(null);
     }
   };
-  
+
   // Email State
   const [emailSubject, setEmailSubject] = useState('');
   const [emailBody, setEmailBody] = useState('');
-  const [recipientType, setRecipientType] = useState<'churches' | 'leaders' | 'test'>('test');
+  const [recipientType, setRecipientType] = useState<'churches' | 'leaders' | 'test' | 'all'>('test');
   const [senderProfile, setSenderProfile] = useState<string>('G3 Church Network <admin@g3min.org>');
   const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [emailStatus, setEmailStatus] = useState<{ success: boolean; message: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [sortBy, setSortBy] = useState<'name' | 'city' | 'date' | 'status'>('name');
+  const [sortBy, setSortBy] = useState<'name' | 'city' | 'date' | 'status' | 'renewal' | 'upcoming_dues' | 'lastLoggedIn'>('name');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   // State for leaders view
@@ -340,11 +536,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [userSortBy, setUserSortBy] = useState<'email' | 'role' | 'lastSignIn'>('email');
   const [userSortOrder, setUserSortOrder] = useState<'asc' | 'desc'>('asc');
 
+  // Change Password Modal State
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [selectedUserForPassword, setSelectedUserForPassword] = useState<{ uid: string; email: string } | null>(null);
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [confirmUserPassword, setConfirmUserPassword] = useState('');
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+
   // Statistics State
   const [churchStats, setChurchStats] = useState<Record<string, any>>({});
   const [loadingStats, setLoadingStats] = useState(false);
   const [globalAnalytics, setGlobalAnalytics] = useState<any>(null);
-  const [viewingStatsChurch, setViewingStatsChurch] = useState<{id: string, name: string} | null>(null);
+  const [viewingStatsChurch, setViewingStatsChurch] = useState<{ id: string, name: string } | null>(null);
   const [statsSearchQuery, setStatsSearchQuery] = useState('');
   const [statsSortBy, setStatsSortBy] = useState<'name' | 'city' | 'views' | 'visits' | 'contacts'>('views');
   const [statsSortOrder, setStatsSortOrder] = useState<'asc' | 'desc'>('desc');
@@ -357,7 +560,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   useEffect(() => {
     if (currentView === 'statistics' && user) {
       loadGlobalAnalytics();
-      
+
       const unsubscribe = subscribeToAllChurchStatistics((stats) => {
         const statsMap = stats.reduce((acc, stat) => {
           acc[stat.churchId] = stat;
@@ -365,7 +568,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         }, {} as Record<string, any>);
         setChurchStats(statsMap);
       });
-      
+
       return () => unsubscribe();
     }
   }, [currentView, user]);
@@ -399,6 +602,83 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
   // Settings Tab State
   const [settingsTab, setSettingsTab] = useState<'email' | 'application' | 'content'>('email');
+
+  // Network Benefits State
+  const [networkBenefits, setNetworkBenefits] = useState<NetworkBenefit[]>([]);
+  const [loadingBenefits, setLoadingBenefits] = useState(false);
+  const [isSavingBenefits, setIsSavingBenefits] = useState(false);
+
+  useEffect(() => {
+    if (currentView === 'settings-benefits' && user) {
+      loadNetworkBenefits();
+    }
+  }, [currentView, user]);
+
+  const loadNetworkBenefits = async () => {
+    setLoadingBenefits(true);
+    try {
+      const benefits = await getNetworkBenefits();
+      if (benefits && benefits.length > 0) {
+        setNetworkBenefits(benefits);
+      } else {
+        // Initialize with defaults if none exist
+        setNetworkBenefits([
+          {
+            id: 'pastors_forum',
+            title: 'Pastors Forum',
+            description: 'Join the conversation at network.g3min.org. All elders are welcome to join our exclusive community.',
+            linkText: 'Join Forum',
+            linkUrl: 'https://network.g3min.org/share/jCRwzB7ASXOP137r?utm_source=manual'
+          },
+          {
+            id: 'discounts',
+            title: 'Exclusive Discounts',
+            description: 'Use code G3CN for 50% off events and free shipping on resources.',
+            linkText: 'Copy Code',
+            linkUrl: '#'
+          },
+          {
+            id: 'job_portal',
+            title: 'Job Portal',
+            description: 'Post ministry positions and find qualified candidates through our dedicated job board.',
+            linkText: 'Manage Job Listings',
+            linkUrl: '#'
+          },
+          {
+            id: 'map',
+            title: 'Church Network Map',
+            description: 'Increase your visibility and help like-minded believers find your church on our global map.',
+            linkText: 'View Map',
+            linkUrl: '/'
+          },
+          {
+            id: 'resources',
+            title: 'G3 Ministries Resources',
+            description: 'Access a wealth of theological resources, articles, and media at G3min.org to equip your church.',
+            linkText: 'Visit G3min.org',
+            linkUrl: 'https://g3min.org'
+          }
+        ]);
+      }
+    } catch (error) {
+      console.error("Error loading network benefits:", error);
+    } finally {
+      setLoadingBenefits(false);
+    }
+  };
+
+  const handleSaveBenefits = async () => {
+    setIsSavingBenefits(true);
+    try {
+      await saveNetworkBenefits(networkBenefits);
+      alert('Network benefits updated successfully!');
+    } catch (error) {
+      console.error("Error saving network benefits:", error);
+      alert('Failed to save network benefits.');
+    } finally {
+      setIsSavingBenefits(false);
+    }
+  };
 
   // Main Page Content State
   const [mainPageContent, setMainPageContent] = useState({
@@ -436,7 +716,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
   // Application Form Field Types
   type FormFieldType = 'text' | 'email' | 'tel' | 'url' | 'number' | 'textarea' | 'select' | 'radio' | 'checkbox' | 'password' | 'dynamic_array';
-  
+
   interface FormField {
     id: string;
     name: string;
@@ -460,7 +740,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     { id: 'applicantEmail', name: 'applicantEmail', label: 'Email Address', type: 'email', required: true, section: 'Account Setup', order: 3, placeholder: 'name@example.com', description: 'Your login email' },
     { id: 'password', name: 'password', label: 'Password', type: 'password', required: true, section: 'Account Setup', order: 4, description: 'Min. 6 characters' },
     { id: 'confirmPassword', name: 'confirmPassword', label: 'Confirm Password', type: 'password', required: true, section: 'Account Setup', order: 5 },
-    
+
     // Church Information Section
     { id: 'churchName', name: 'churchName', label: 'Church Name', type: 'text', required: true, section: 'Church Information', order: 10 },
     { id: 'churchAddress.street', name: 'churchAddress.street', label: 'Street Address', type: 'text', required: true, section: 'Church Information', order: 11, placeholder: 'Street Address' },
@@ -473,16 +753,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     { id: 'connections.website', name: 'connections.website', label: 'Church Website', type: 'url', required: false, section: 'Church Information', order: 18, placeholder: 'https://' },
     { id: 'churchEmail', name: 'churchEmail', label: 'Church Public Email', type: 'email', required: false, section: 'Church Information', order: 19 },
     { id: 'churchDescription', name: 'churchDescription', label: 'Briefly describe your church', type: 'textarea', required: true, section: 'Church Information', order: 20, rows: 4 },
-    
+
     // Elders Section
     { id: 'leaders', name: 'leaders', label: 'Elders', type: 'dynamic_array', required: false, section: 'Elders', order: 30, description: 'Optional - can add later' },
-    
+
     // Doctrine & Practice Section
     { id: 'pluralityOfElders', name: 'pluralityOfElders', label: 'Is Your Local Church Led By a Plurality of Elders?', type: 'select', required: true, section: 'Doctrine & Practice', order: 40, options: ['Yes', 'No', 'No, but working toward it.'] },
     { id: 'churchDiscipline', name: 'churchDiscipline', label: 'Does Your Local Church Practice Church Discipline?', type: 'select', required: true, section: 'Doctrine & Practice', order: 41, options: ['Yes', 'No', 'No, but working toward it.'] },
     { id: 'ssjgSigned', name: 'ssjgSigned', label: 'Has your church leadership signed the Statement on Social Justice and the Gospel?', type: 'select', required: true, section: 'Doctrine & Practice', order: 42, options: ['Yes', 'No', 'No, but agree with it'] },
     { id: 'confessionAffirmation', name: 'confessionAffirmation', label: 'Can you as the pastor(s) affirm the 1689 London Baptist Confession of Faith? If not, please explain.', type: 'textarea', required: true, section: 'Doctrine & Practice', order: 43, rows: 5 },
-    
+
     // Network Dues Section
     { id: 'paymentAmount', name: 'paymentAmount', label: 'Annual Contribution Amount ($)', type: 'number', required: true, section: 'Network Dues', order: 50, min: 500, placeholder: '500', description: 'Minimum: $500' },
     { id: 'paymentFrequency', name: 'paymentFrequency', label: 'Payment Frequency', type: 'radio', required: true, section: 'Network Dues', order: 51, options: ['yearly', 'one_time'] },
@@ -543,7 +823,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
     const sectionFields = formFields.filter(f => f.section === field.section).sort((a, b) => a.order - b.order);
     const currentIndex = sectionFields.findIndex(f => f.id === fieldId);
-    
+
     if (direction === 'up' && currentIndex > 0) {
       const previousField = sectionFields[currentIndex - 1];
       const newOrder = previousField.order;
@@ -585,13 +865,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      console.log("AdminDashboard: Auth State Changed:", currentUser ? currentUser.uid : "No User"); // Debug Log
       setUser(currentUser);
       if (currentUser) {
         // Fetch user profile to check role
-        const profile = await getUserProfile(currentUser.uid);
-        setCurrentUserProfile(profile);
-        if (profile?.role === 'admin') {
-          await fetchAllUsers(); // Only fetch users if current user is admin
+        try {
+          console.log("Fetching user profile for:", currentUser.uid); // Debug Log
+          const profile = await getUserProfile(currentUser.uid);
+          console.log("Fetched profile:", profile); // Debug Log
+          setCurrentUserProfile(profile);
+          if (profile?.role === 'admin') {
+            await fetchAllUsers(); // Only fetch users if current user is admin
+          }
+        } catch (err) {
+          console.error("Error fetching user profile:", err);
         }
       } else {
         setCurrentUserProfile(null);
@@ -627,15 +914,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
+    console.log("Admin Login Submitted"); // Debug Log
     setAuthError('');
     setAuthLoading(true);
     try {
       if (isRegistering) {
+        console.log("Registering admin..."); // Debug Log
         await registerWithEmail(email, password);
       } else {
+        console.log("Logging in admin..."); // Debug Log
         await loginWithEmail(email, password);
       }
+      console.log("Auth action successful"); // Debug Log
     } catch (err: any) {
+      console.error("Auth error:", err); // Debug Log
       setAuthError(err.message || "Authentication failed. Please check your credentials.");
     } finally {
       setAuthLoading(false);
@@ -643,6 +935,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   };
 
   const pendingApps = applications.filter(a => a.status === ApplicationStatus.PENDING);
+  const provisionalApps = applications.filter(a => a.status === ApplicationStatus.PROVISIONAL_APPROVED);
   const approvedApps = applications.filter(a => a.status === ApplicationStatus.APPROVED);
   const rejectedApps = applications.filter(a => a.status === ApplicationStatus.REJECTED);
 
@@ -672,7 +965,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     })
     .sort((a, b) => {
       let valA: any, valB: any;
-      
+
       switch (statsSortBy) {
         case 'name':
           valA = a.churchName;
@@ -698,15 +991,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           valA = a.stats.views;
           valB = b.stats.views;
       }
-      
+
       if (typeof valA === 'string') {
-        return statsSortOrder === 'asc' 
-          ? valA.localeCompare(valB) 
+        return statsSortOrder === 'asc'
+          ? valA.localeCompare(valB)
           : valB.localeCompare(valA);
       }
-      
-      return statsSortOrder === 'asc' 
-        ? valA - valB 
+
+      return statsSortOrder === 'asc'
+        ? valA - valB
         : valB - valA;
     });
 
@@ -715,7 +1008,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     .filter(app => {
       if (!searchQuery) return true;
       const query = searchQuery.toLowerCase();
-      const address = app.churchAddress || {};
+      const address = app.churchAddress || {} as any;
       return (
         app.churchName.toLowerCase().includes(query) ||
         (address?.city || '').toLowerCase().includes(query) || // Added optional chaining
@@ -726,8 +1019,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     })
     .sort((a, b) => {
       let comparison = 0;
-      const aAddress = a.churchAddress || {};
-      const bAddress = b.churchAddress || {};
+      const aAddress = a.churchAddress || {} as any;
+      const bAddress = b.churchAddress || {} as any;
+
+      // Helper to check for upcoming dues (within 30 days) without auto-renewal
+      const getDuesStatusScore = (app: ChurchApplication) => {
+        if (app.stripeSubscriptionId) return 0; // Has auto-renewal, low priority for "upcoming dues" sort
+        if (!app.nextDueDate) return 1; // No due date, low priority
+
+        const today = new Date();
+        const dueDate = new Date(app.nextDueDate);
+        const diffTime = dueDate.getTime() - today.getTime();
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        if (diffDays < 0) return 4; // Overdue - highest priority
+        if (diffDays <= 30) return 3; // Due within month - high priority
+        return 2; // Due later
+      };
+
       switch (sortBy) {
         case 'name':
           comparison = a.churchName.localeCompare(b.churchName);
@@ -743,9 +1052,56 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           const bHasCoords = b.coordinates ? 1 : 0;
           comparison = aHasCoords - bHasCoords;
           break;
+        case 'renewal':
+          // Sort by auto-renewal (subscription ID present)
+          const aRenewal = a.stripeSubscriptionId ? 1 : 0;
+          const bRenewal = b.stripeSubscriptionId ? 1 : 0;
+          comparison = aRenewal - bRenewal;
+          break;
+        case 'upcoming_dues':
+          // Sort by those needing attention first (overdue/upcoming no-auto-renewal)
+          comparison = getDuesStatusScore(a) - getDuesStatusScore(b);
+          break;
+        case 'lastLoggedIn':
+          // Sort by last logged in time
+          const aUser = a.userId ? allUsers.find(u => u.uid === a.userId) : null;
+          const bUser = b.userId ? allUsers.find(u => u.uid === b.userId) : null;
+          const aTime = aUser?.lastSignInTime ? new Date(aUser.lastSignInTime).getTime() : 0;
+          const bTime = bUser?.lastSignInTime ? new Date(bUser.lastSignInTime).getTime() : 0;
+          comparison = aTime - bTime;
+          break;
       }
       return sortOrder === 'asc' ? comparison : -comparison;
     });
+
+  // Handle Provisional Approve (creates portal account, sends provisional approval email)
+  const handleProvisionalApprove = async (app: ChurchApplication) => {
+    setProcessingId(app.id);
+    try {
+      await provisionallyApproveApplication(app.id);
+      alert(`${app.churchName} has been provisionally approved! Portal account created and email sent.`);
+    } catch (error: any) {
+      console.error("Error during provisional approval:", error);
+      alert(`Failed to provisionally approve church: ${error.message || 'Unknown error'}`);
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  // Handle Manual Full Approval (Bypass Payment)
+  const handleManualApprove = async (app: ChurchApplication) => {
+    if (!confirm(`Are you sure you want to MANUALLY approve ${app.churchName}? This bypasses the payment requirement and grants full access.`)) return;
+    setProcessingId(app.id);
+    try {
+      await updateApplicationStatus(app.id, ApplicationStatus.APPROVED); // Triggers welcome email via Cloud Function
+      alert(`${app.churchName} has been fully approved!`);
+    } catch (error: any) {
+      console.error("Error manually approving:", error);
+      alert(`Failed to approve: ${error.message}`);
+    } finally {
+      setProcessingId(null);
+    }
+  };
 
   const handleApprove = async (app: ChurchApplication, fromModal = false) => {
     if (!app.id) {
@@ -771,7 +1127,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
       // 3. Process Approval & Payment via Cloud Function
       await approveApplication(app.id); // Use original ID as profile is updated if needed
-      
+
       alert(`${app.churchName} approved successfully!`);
       if (fromModal) {
         setViewingChurch(null); // Close modal only if approved from modal
@@ -786,7 +1142,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   };
 
   const handleReject = async (app: ChurchApplication) => {
-    if(confirm(`Are you sure you want to reject ${app.churchName}?`)) {
+    if (confirm(`Are you sure you want to reject ${app.churchName}?`)) {
       setProcessingId(app.id);
       try {
         await updateApplicationStatus(app.id, ApplicationStatus.REJECTED);
@@ -813,7 +1169,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
   const handleAssignAllCoordinates = async () => {
     const churchesWithoutCoords = approvedApps.filter(app => !app.coordinates);
-    
+
     if (churchesWithoutCoords.length === 0) {
       alert('All approved churches already have coordinates assigned!');
       return;
@@ -842,12 +1198,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     }
 
     setIsImporting(false);
-    
+
     const message = `Coordinate Assignment Complete!\n\nSuccessfully assigned: ${successCount} churches\nFailed: ${failedCount}`;
     const detailedMessage = errors.length > 0
       ? `${message}\n\nErrors:\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? '\n...(and more)' : ''}`
       : message;
-    
+
     alert(detailedMessage);
   };
 
@@ -882,7 +1238,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     if (postalCode) cityStatePostal.push(postalCode);
     if (cityStatePostal.length > 0) addressParts.push(cityStatePostal.join(' '));
     if (country) addressParts.push(country);
-    
+
     return addressParts.filter(Boolean).join(', ');
   }
 
@@ -911,7 +1267,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     ];
 
     const rows = approvedApps.map(app => {
-      const address = app.churchAddress || {};
+      const address = app.churchAddress || {} as any;
       return [
         app.id,
         app.churchName,
@@ -967,7 +1323,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     try {
       const Papa = (await import('papaparse')).default;
       const text = await file.text();
-      
+
       const parseResult = Papa.parse(text, {
         header: true,
         skipEmptyLines: true,
@@ -979,12 +1335,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       }
 
       const rows = parseResult.data as any[];
-      
+
       if (rows.length === 0) {
         alert('CSV file appears to be empty or invalid.');
         return;
       }
-      
+
       let successCount = 0;
       let errorCount = 0;
       const errors: string[] = [];
@@ -1031,7 +1387,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           if (data['Last Dues Payment'] && data['Last Dues Payment'].trim()) {
             churchData.lastPaymentDate = new Date(data['Last Dues Payment']).toISOString();
           }
-          
+
           if (data['Next Due Date'] && data['Next Due Date'].trim()) {
             churchData.nextDueDate = new Date(data['Next Due Date']).toISOString();
           }
@@ -1061,10 +1417,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       }
 
       const message = `Import Complete!\n\nSuccessfully imported: ${successCount} churches\nFailed: ${errorCount}`;
-      const detailedMessage = errors.length > 0 
+      const detailedMessage = errors.length > 0
         ? `${message}\n\nErrors:\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? '\n...(and more)' : ''}`
         : message;
-      
+
       alert(detailedMessage);
       console.log('Import summary:', { successCount, errorCount, errors });
     } catch (error: any) {
@@ -1097,39 +1453,39 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               ? "Your account does not have administrator privileges."
               : isRegistering ? 'Register to manage the network.' : 'Please sign in to manage church applications.'}
           </p>
-          
+
           <form onSubmit={handleAuth} className="space-y-4 text-left">
             <div>
               <label className="block text-sm font-medium text-gray-700">Email Address</label>
-              <input 
-                type="email" 
-                value={email} 
-                onChange={e => setEmail(e.target.value)} 
-                required 
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                required
                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2 bg-white text-black"
                 placeholder="you@example.com"
               />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700">Password</label>
-              <input 
-                type="password" 
-                value={password} 
-                onChange={e => setPassword(e.target.value)} 
-                required 
+              <input
+                type="password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                required
                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2 bg-white text-black"
                 placeholder="••••••••"
               />
             </div>
-            
-            {authError && <div className="text-red-600 text-sm bg-red-50 p-2 rounded">{authError}</div>}
-            
-          <Button type="submit" className="w-full" isLoading={authLoading}>
-            {isRegistering ? 'Create Account' : 'Sign In'}
-          </Button>
-        </form>
 
-        <div className="mt-4">
+            {authError && <div className="text-red-600 text-sm bg-red-50 p-2 rounded">{authError}</div>}
+
+            <Button type="submit" className="w-full" isLoading={authLoading}>
+              {isRegistering ? 'Create Account' : 'Sign In'}
+            </Button>
+          </form>
+
+          <div className="mt-4">
             <Button variant="outline" onClick={onBack} className="w-full">Back to Home</Button>
           </div>
         </div>
@@ -1137,9 +1493,281 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     );
   }
 
+  // Add Church Modal
+  const AddChurchModal = ({ onClose }: { onClose: () => void }) => {
+    const [newChurch, setNewChurch] = useState<Partial<ChurchApplication>>({
+      churchName: '',
+      churchAddress: { country: 'USA', street: '', city: '', state: '', postalCode: '' },
+      churchPhone: '',
+      churchEmail: '',
+      churchDescription: '',
+      applicantFirstName: '',
+      applicantLastName: '',
+      applicantEmail: '',
+      status: ApplicationStatus.APPROVED,
+      submittedAt: new Date().toISOString(),
+      pluralityOfElders: 'Yes',
+      churchDiscipline: 'Yes',
+      ssjgSigned: 'No',
+      confessionAffirmation: '',
+      leaders: [],
+      gatherings: [],
+      connections: {}
+    });
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
+    const handleSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+
+      if (!newChurch.churchName || !newChurch.applicantEmail || !newChurch.churchAddress?.city) {
+        alert('Please fill in at least Church Name, Applicant Email, and City.');
+        return;
+      }
+
+      setIsSubmitting(true);
+      try {
+        // Ensure required fields for type safety
+        const churchToSubmit = {
+          ...newChurch,
+          // Defaults for required fields not in simple form
+          churchPhone: newChurch.churchPhone || '',
+          churchEmail: newChurch.churchEmail || '',
+          churchDescription: newChurch.churchDescription || '',
+          applicantFirstName: newChurch.applicantFirstName || 'Admin',
+          applicantLastName: newChurch.applicantLastName || 'Added',
+          pluralityOfElders: newChurch.pluralityOfElders || 'Yes',
+          churchDiscipline: newChurch.churchDiscipline || 'Yes',
+          ssjgSigned: newChurch.ssjgSigned || 'No',
+          confessionAffirmation: newChurch.confessionAffirmation || 'Manually added by admin',
+          leaders: newChurch.leaders || [],
+          gatherings: newChurch.gatherings || [],
+          connections: newChurch.connections || {},
+          paymentAmount: 500, // Default minimum
+          paymentFrequency: 'yearly'
+        } as ChurchApplication;
+
+        await submitApplication(churchToSubmit);
+        alert('Church added successfully!');
+        onClose();
+      } catch (error: any) {
+        console.error('Error adding church:', error);
+        alert(`Failed to add church: ${error.message || 'Unknown error'}`);
+      } finally {
+        setIsSubmitting(false);
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={onClose}>
+        <div className="flex items-center justify-center min-h-screen px-4 py-6">
+          <div
+            className="bg-white rounded-lg shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="bg-black px-6 py-4 flex items-center justify-between sticky top-0 z-10">
+              <h3 className="text-2xl font-serif font-bold text-white">Add New Church</h3>
+              <button onClick={onClose} className="text-gray-300 hover:text-white">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="p-6 space-y-6">
+              {/* Applicant Info */}
+              <div>
+                <h4 className="text-lg font-bold text-gray-900 mb-3">Applicant Information</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">First Name</label>
+                    <input
+                      type="text"
+                      value={newChurch.applicantFirstName}
+                      onChange={(e) => setNewChurch({ ...newChurch, applicantFirstName: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      placeholder="Admin"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Last Name</label>
+                    <input
+                      type="text"
+                      value={newChurch.applicantLastName}
+                      onChange={(e) => setNewChurch({ ...newChurch, applicantLastName: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      placeholder="Added"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700">Email Address *</label>
+                    <input
+                      type="email"
+                      required
+                      value={newChurch.applicantEmail}
+                      onChange={(e) => setNewChurch({ ...newChurch, applicantEmail: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Church Information */}
+              <div>
+                <h4 className="text-lg font-bold text-gray-900 mb-3">Church Information</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="sm:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700">Church Name *</label>
+                    <input
+                      type="text"
+                      required
+                      value={newChurch.churchName}
+                      onChange={(e) => setNewChurch({ ...newChurch, churchName: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Phone</label>
+                    <input
+                      type="tel"
+                      value={newChurch.churchPhone}
+                      onChange={(e) => setNewChurch({ ...newChurch, churchPhone: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Public Email</label>
+                    <input
+                      type="email"
+                      value={newChurch.churchEmail}
+                      onChange={(e) => setNewChurch({ ...newChurch, churchEmail: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700">Brief Description</label>
+                    <textarea
+                      value={newChurch.churchDescription}
+                      onChange={(e) => setNewChurch({ ...newChurch, churchDescription: e.target.value })}
+                      rows={3}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Address */}
+              <div>
+                <h4 className="text-lg font-bold text-gray-900 mb-3">Address</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="sm:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700">Street Address</label>
+                    <input
+                      type="text"
+                      value={newChurch.churchAddress?.street || ''}
+                      onChange={(e) => setNewChurch({
+                        ...newChurch,
+                        churchAddress: { ...newChurch.churchAddress!, street: e.target.value }
+                      })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">City *</label>
+                    <input
+                      type="text"
+                      required
+                      value={newChurch.churchAddress?.city || ''}
+                      onChange={(e) => setNewChurch({
+                        ...newChurch,
+                        churchAddress: { ...newChurch.churchAddress!, city: e.target.value }
+                      })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">State / Province</label>
+                    <input
+                      type="text"
+                      value={newChurch.churchAddress?.state || ''}
+                      onChange={(e) => setNewChurch({
+                        ...newChurch,
+                        churchAddress: { ...newChurch.churchAddress!, state: e.target.value }
+                      })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Postal Code</label>
+                    <input
+                      type="text"
+                      value={newChurch.churchAddress?.postalCode || ''}
+                      onChange={(e) => setNewChurch({
+                        ...newChurch,
+                        churchAddress: { ...newChurch.churchAddress!, postalCode: e.target.value }
+                      })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Country *</label>
+                    <input
+                      type="text"
+                      required
+                      value={newChurch.churchAddress?.country || 'USA'}
+                      onChange={(e) => setNewChurch({
+                        ...newChurch,
+                        churchAddress: { ...newChurch.churchAddress!, country: e.target.value }
+                      })}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Status */}
+              <div>
+                <h4 className="text-lg font-bold text-gray-900 mb-3">Status</h4>
+                <div className="flex items-center gap-4">
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="status"
+                      checked={newChurch.status === ApplicationStatus.APPROVED}
+                      onChange={() => setNewChurch({ ...newChurch, status: ApplicationStatus.APPROVED })}
+                      className="mr-2"
+                    />
+                    Approved (Visible on Map)
+                  </label>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="status"
+                      checked={newChurch.status === ApplicationStatus.PENDING}
+                      onChange={() => setNewChurch({ ...newChurch, status: ApplicationStatus.PENDING })}
+                      className="mr-2"
+                    />
+                    Pending (Needs Review)
+                  </label>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="flex justify-end gap-2 pt-4 border-t">
+                <Button type="button" variant="outline" onClick={onClose}>
+                  Cancel
+                </Button>
+                <Button type="submit" variant="primary" isLoading={isSubmitting}>
+                  Add Church
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // Church Detail Modal with Edit Mode
-  const ChurchDetailModal = ({ church, onClose, onCreatePortalAccount, isProcessingPortalAccount, onUpdate }: { 
-    church: ChurchApplication; 
+  const ChurchDetailModal = ({ church, onClose, onCreatePortalAccount, isProcessingPortalAccount, onUpdate }: {
+    church: ChurchApplication;
     onClose: () => void;
     onCreatePortalAccount: (churchId: string, applicantEmail: string, churchName: string) => Promise<void>;
     isProcessingPortalAccount: boolean;
@@ -1154,6 +1782,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     });
     const [isUploadingLogo, setIsUploadingLogo] = useState(false);
     const [resendingEmail, setResendingEmail] = useState<EmailType | null>(null);
+    const [sendingDuesReminder, setSendingDuesReminder] = useState<boolean>(false);
+
+    const nextDueDate = church.nextDueDate ? new Date(church.nextDueDate) : null;
+    const today = new Date();
+    const daysUntilDue = nextDueDate ? Math.ceil((nextDueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)) : null;
+    const isOverdue = daysUntilDue !== null && daysUntilDue < 0;
 
     // Sync local state when church prop changes (e.g., after successful save)
     useEffect(() => {
@@ -1164,9 +1798,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       });
     }, [church]);
 
+    const handleSendDuesReminder = async (churchId: string) => {
+      if (!confirm(`Are you sure you want to send a delinquency notice to ${church.churchName}?`)) return;
+
+      setSendingDuesReminder(true);
+      try {
+        await resendSystemEmail(churchId, 'dues_delinquent');
+        alert('Dues reminder sent successfully!');
+      } catch (error: any) {
+        console.error("Error sending dues reminder:", error);
+        alert(`Failed to send dues reminder: ${error.message || 'Unknown error'}`);
+      } finally {
+        setSendingDuesReminder(false);
+      }
+    };
+
     const handleResendEmail = async (type: EmailType) => {
       if (!confirm(`Are you sure you want to resend the ${type.replace('_', ' ')} email to ${church.applicantEmail}?`)) return;
-      
+
       setResendingEmail(type);
       try {
         await resendSystemEmail(church.id, type);
@@ -1199,10 +1848,61 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       setIsSavingEdit(true);
       try {
         const { id, ...updates } = editedChurch;
+
+        // Check if applicant email has changed
+        const emailChanged = church.applicantEmail !== editedChurch.applicantEmail;
+        const oldEmail = church.applicantEmail;
+        const newEmail = editedChurch.applicantEmail;
+
+        // Auto-clear delinquent status if next due date is in the future
+        if (updates.nextDueDate) {
+          const nextDue = new Date(updates.nextDueDate);
+          const today = new Date();
+
+          if (nextDue > today) {
+            // Due date is in the future, clear delinquent flags
+            updates.isManuallyDelinquent = false;
+            if (updates.status === ApplicationStatus.DELINQUENT) {
+              updates.status = ApplicationStatus.APPROVED;
+            }
+          }
+        }
+
+        // If email changed, clear the userId so a new account can be created
+        if (emailChanged) {
+          updates.userId = null;
+        }
+
         await updateChurchProfile(church.id, updates);
-        onUpdate(editedChurch); // Update the parent state with the edited church
+        onUpdate({ ...editedChurch, ...updates }); // Update with the modified updates
         setIsEditMode(false);
-        alert('Church profile updated successfully!');
+
+        // If applicant email changed, offer to create new portal account
+        if (emailChanged) {
+          const createNewAccount = confirm(
+            `Applicant email changed from ${oldEmail} to ${newEmail}.\n\n` +
+            `Do you want to create a new portal account for ${newEmail}?\n\n` +
+            `This will send a password setup email to the new address.`
+          );
+
+          if (createNewAccount) {
+            try {
+              await onCreatePortalAccount(church.id, newEmail, church.churchName);
+              alert('Church profile updated and new portal account created successfully!');
+            } catch (error: any) {
+              console.error('Error creating new portal account:', error);
+              alert(
+                'Church profile updated successfully, but failed to create portal account.\n\n' +
+                `Error: ${error.message || 'Unknown error'}\n\n` +
+                'You can manually create the portal account from the Active Members view.'
+              );
+            }
+          } else {
+            alert('Church profile updated successfully! Remember to create a portal account for the new applicant when ready.');
+          }
+        } else {
+          alert('Church profile updated successfully!');
+        }
       } catch (error) {
         console.error('Error updating church:', error);
         alert('Failed to update church profile. Please try again.');
@@ -1267,7 +1967,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     return (
       <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={onClose}>
         <div className="flex items-center justify-center min-h-screen px-4 py-6">
-          <div 
+          <div
             className="bg-white rounded-lg shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
@@ -1297,17 +1997,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               <div className="flex flex-col gap-4 pb-4 border-b">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                      church.status === ApplicationStatus.APPROVED ? 'bg-green-100 text-green-800' :
+                    <span className={`px-3 py-1 rounded-full text-sm font-semibold ${church.status === ApplicationStatus.APPROVED ? 'bg-green-100 text-green-800' :
                       church.status === ApplicationStatus.PENDING ? 'bg-yellow-100 text-yellow-800' :
-                      'bg-red-100 text-red-800'
-                    }`}>
+                        'bg-red-100 text-red-800'
+                      }`}>
                       {church.status}
                     </span>
                     {church.status === ApplicationStatus.APPROVED && (
-                      <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        church.coordinates ? 'bg-blue-100 text-blue-800' : 'bg-orange-100 text-orange-800'
-                      }`}>
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${church.coordinates ? 'bg-blue-100 text-blue-800' : 'bg-orange-100 text-orange-800'
+                        }`}>
                         {church.coordinates ? '📍 On Map' : '⚠️ Not on Map'}
                       </span>
                     )}
@@ -1319,8 +2017,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     {/* Resend Actions */}
                     <div className="flex items-center gap-2 bg-gray-50 p-2 rounded-lg">
                       <span className="text-xs font-medium text-gray-500 uppercase tracking-wide mr-1">Resend:</span>
-                      <Button 
-                        variant="outline" 
+                      <Button
+                        variant="outline"
                         onClick={() => handleResendEmail('application_received')}
                         isLoading={resendingEmail === 'application_received'}
                         className="px-2 py-1 h-7 text-xs flex items-center gap-1 bg-white"
@@ -1330,8 +2028,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         Received
                       </Button>
                       {church.status === ApplicationStatus.APPROVED && (
-                        <Button 
-                          variant="outline" 
+                        <Button
+                          variant="outline"
                           onClick={() => handleResendEmail('application_approved')}
                           isLoading={resendingEmail === 'application_approved'}
                           className="px-2 py-1 h-7 text-xs flex items-center gap-1 text-green-700 hover:text-green-800 hover:bg-green-50 border-green-200 bg-white"
@@ -1342,8 +2040,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         </Button>
                       )}
                       {church.status === ApplicationStatus.REJECTED && (
-                        <Button 
-                          variant="outline" 
+                        <Button
+                          variant="outline"
                           onClick={() => handleResendEmail('application_rejected')}
                           isLoading={resendingEmail === 'application_rejected'}
                           className="px-2 py-1 h-7 text-xs flex items-center gap-1 text-red-700 hover:text-red-800 hover:bg-red-50 border-red-200 bg-white"
@@ -1357,16 +2055,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
                     {/* Management Actions */}
                     <div className="flex flex-wrap gap-2">
-                      {church.status === ApplicationStatus.PENDING && (
-                        <Button 
-                          variant="primary" 
-                          onClick={() => handleApprove(church, true)}
-                          isLoading={isProcessingPortalAccount} // Re-use loading state
+                      {isOverdue && (
+                        <Button
+                          variant="secondary"
+                          onClick={() => handleSendDuesReminder(church.id)}
+                          isLoading={sendingDuesReminder}
                           className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
                         >
-                          <Check className="w-3 h-3" />
-                          Approve Church
+                          <Mail className="w-3 h-3" />
+                          Send Dues Reminder
                         </Button>
+                      )}
+                      {church.status === ApplicationStatus.PENDING && (
+                        <>
+                          <Button
+                            variant="secondary"
+                            onClick={() => handleProvisionalApprove(church)}
+                            isLoading={isProcessingPortalAccount}
+                            className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5 bg-orange-600 hover:bg-orange-700 text-white border-orange-600"
+                          >
+                            <Clock className="w-3 h-3" />
+                            Provisional Approve
+                          </Button>
+                          <Button
+                            variant="primary"
+                            onClick={() => handleApprove(church, true)}
+                            isLoading={isProcessingPortalAccount}
+                            className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
+                          >
+                            <Check className="w-3 h-3" />
+                            Approve Church
+                          </Button>
+                        </>
                       )}
                       {church.status === ApplicationStatus.APPROVED && (
                         <>
@@ -1400,10 +2120,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           )}
                         </>
                       )}
-                      {church.status === ApplicationStatus.APPROVED && (
+                      {(church.status === ApplicationStatus.APPROVED || church.status === ApplicationStatus.DELINQUENT) && (
                         <>
-                          <Button 
-                            variant="outline" 
+                          <Button
+                            variant="outline"
                             onClick={() => handleReassignCoordinates(church)}
                             disabled={processingId === church.id}
                             isLoading={processingId === church.id}
@@ -1412,8 +2132,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                             <MapPin className="w-3 h-3" />
                             Map
                           </Button>
-                          <Button 
-                            variant="primary" 
+                          <Button
+                            variant="primary"
                             onClick={() => setIsEditMode(true)}
                             className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
                           >
@@ -1422,9 +2142,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           </Button>
                         </>
                       )}
-                      {church.status === ApplicationStatus.APPROVED && (
-                        <Button 
-                          variant="danger" 
+                      {(church.status === ApplicationStatus.APPROVED || church.status === ApplicationStatus.DELINQUENT) && (
+                        <Button
+                          variant="danger"
                           onClick={() => handleReject(church)}
                           disabled={processingId === church.id}
                           className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
@@ -1433,7 +2153,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           Reject
                         </Button>
                       )}
-                      <Button 
+                      <Button
                         variant="danger"
                         onClick={() => handleDelete(church)}
                         className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
@@ -1446,78 +2166,78 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 )}
               </div>
 
-            {/* Logo Upload (Edit Mode) */}
-            {isEditMode && (
-              <div>
-                <h4 className="text-lg font-bold text-gray-900 mb-3">Church Logo</h4>
-                <div className="flex items-center gap-4">
-                  {editedChurch.churchLogoUrl && (
-                    <img 
-                      src={editedChurch.churchLogoUrl} 
-                      alt="Church Logo" 
-                      className="w-16 h-16 rounded-full object-cover border"
-                    />
-                  )}
-                  <label className={`cursor-pointer bg-white border border-gray-300 rounded-md px-4 py-2 flex items-center gap-2 hover:bg-gray-50 transition-colors ${isUploadingLogo ? 'opacity-50 cursor-not-allowed' : ''}`}>
-                    <Upload className="w-4 h-4" />
-                    {isUploadingLogo ? 'Uploading...' : 'Upload Logo'}
-                    <input 
-                      type="file" 
-                      className="hidden" 
-                      accept="image/*"
-                      onChange={handleLogoUpload}
-                      disabled={isUploadingLogo}
-                    />
-                  </label>
-                </div>
-              </div>
-            )}
-
-            {/* Applicant Info */}
-            <div>
-              <h4 className="text-lg font-bold text-gray-900 mb-3">Applicant Information</h4>
-              {isEditMode ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">First Name</label>
-                    <input
-                      type="text"
-                      value={editedChurch.applicantFirstName}
-                      onChange={(e) => setEditedChurch({ ...editedChurch, applicantFirstName: e.target.value })}
-                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Last Name</label>
-                    <input
-                      type="text"
-                      value={editedChurch.applicantLastName}
-                      onChange={(e) => setEditedChurch({ ...editedChurch, applicantLastName: e.target.value })}
-                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                    />
-                  </div>
-                  <div className="sm:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700">Email Address</label>
-                    <input
-                      type="email"
-                      value={editedChurch.applicantEmail}
-                      onChange={(e) => setEditedChurch({ ...editedChurch, applicantEmail: e.target.value })}
-                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                    />
-                  </div>
-                  <div className="sm:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700">Submitted</label>
-                    <div className="mt-1 text-sm text-gray-900">{new Date(church.submittedAt).toLocaleString()}</div>
+              {/* Logo Upload (Edit Mode) */}
+              {isEditMode && (
+                <div>
+                  <h4 className="text-lg font-bold text-gray-900 mb-3">Church Logo</h4>
+                  <div className="flex items-center gap-4">
+                    {editedChurch.churchLogoUrl && (
+                      <img
+                        src={editedChurch.churchLogoUrl}
+                        alt="Church Logo"
+                        className="w-16 h-16 rounded-full object-cover border"
+                      />
+                    )}
+                    <label className={`cursor-pointer bg-white border border-gray-300 rounded-md px-4 py-2 flex items-center gap-2 hover:bg-gray-50 transition-colors ${isUploadingLogo ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                      <Upload className="w-4 h-4" />
+                      {isUploadingLogo ? 'Uploading...' : 'Upload Logo'}
+                      <input
+                        type="file"
+                        className="hidden"
+                        accept="image/*"
+                        onChange={handleLogoUpload}
+                        disabled={isUploadingLogo}
+                      />
+                    </label>
                   </div>
                 </div>
-              ) : (
-                <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <InfoRow label="Name" value={`${church.applicantFirstName} ${church.applicantLastName}`} />
-                  <InfoRow label="Email" value={church.applicantEmail} />
-                  <InfoRow label="Submitted" value={new Date(church.submittedAt).toLocaleString()} />
-                </dl>
               )}
-            </div>
+
+              {/* Applicant Info */}
+              <div>
+                <h4 className="text-lg font-bold text-gray-900 mb-3">Applicant Information</h4>
+                {isEditMode ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">First Name</label>
+                      <input
+                        type="text"
+                        value={editedChurch.applicantFirstName}
+                        onChange={(e) => setEditedChurch({ ...editedChurch, applicantFirstName: e.target.value })}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">Last Name</label>
+                      <input
+                        type="text"
+                        value={editedChurch.applicantLastName}
+                        onChange={(e) => setEditedChurch({ ...editedChurch, applicantLastName: e.target.value })}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-sm font-medium text-gray-700">Email Address</label>
+                      <input
+                        type="email"
+                        value={editedChurch.applicantEmail}
+                        onChange={(e) => setEditedChurch({ ...editedChurch, applicantEmail: e.target.value })}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-sm font-medium text-gray-700">Submitted</label>
+                      <div className="mt-1 text-sm text-gray-900">{new Date(church.submittedAt).toLocaleString()}</div>
+                    </div>
+                  </div>
+                ) : (
+                  <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <InfoRow label="Name" value={`${church.applicantFirstName} ${church.applicantLastName}`} />
+                    <InfoRow label="Email" value={church.applicantEmail} />
+                    <InfoRow label="Submitted" value={new Date(church.submittedAt).toLocaleString()} />
+                  </dl>
+                )}
+              </div>
 
               {/* Church Contact */}
               <div>
@@ -1547,8 +2267,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       <input
                         type="url"
                         value={editedChurch.connections?.website || ''}
-                        onChange={(e) => setEditedChurch({ 
-                          ...editedChurch, 
+                        onChange={(e) => setEditedChurch({
+                          ...editedChurch,
                           connections: { ...editedChurch.connections, website: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
@@ -1574,8 +2294,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       <input
                         type="text"
                         value={editedChurch.churchAddress?.street || ''}
-                        onChange={(e) => setEditedChurch({ 
-                          ...editedChurch, 
+                        onChange={(e) => setEditedChurch({
+                          ...editedChurch,
                           churchAddress: { ...editedChurch.churchAddress!, street: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
@@ -1586,8 +2306,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       <input
                         type="text"
                         value={editedChurch.churchAddress?.aptUnit || ''}
-                        onChange={(e) => setEditedChurch({ 
-                          ...editedChurch, 
+                        onChange={(e) => setEditedChurch({
+                          ...editedChurch,
                           churchAddress: { ...editedChurch.churchAddress!, aptUnit: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
@@ -1598,8 +2318,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       <input
                         type="text"
                         value={editedChurch.churchAddress?.city || ''}
-                        onChange={(e) => setEditedChurch({ 
-                          ...editedChurch, 
+                        onChange={(e) => setEditedChurch({
+                          ...editedChurch,
                           churchAddress: { ...editedChurch.churchAddress!, city: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
@@ -1610,8 +2330,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       <input
                         type="text"
                         value={editedChurch.churchAddress?.state || ''}
-                        onChange={(e) => setEditedChurch({ 
-                          ...editedChurch, 
+                        onChange={(e) => setEditedChurch({
+                          ...editedChurch,
                           churchAddress: { ...editedChurch.churchAddress!, state: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
@@ -1622,8 +2342,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       <input
                         type="text"
                         value={editedChurch.churchAddress?.postalCode || ''}
-                        onChange={(e) => setEditedChurch({ 
-                          ...editedChurch, 
+                        onChange={(e) => setEditedChurch({
+                          ...editedChurch,
                           churchAddress: { ...editedChurch.churchAddress!, postalCode: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
@@ -1634,8 +2354,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       <input
                         type="text"
                         value={editedChurch.churchAddress?.country || ''}
-                        onChange={(e) => setEditedChurch({ 
-                          ...editedChurch, 
+                        onChange={(e) => setEditedChurch({
+                          ...editedChurch,
                           churchAddress: { ...editedChurch.churchAddress!, country: e.target.value }
                         })}
                         className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
@@ -1651,31 +2371,66 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               <div>
                 <h4 className="text-lg font-bold text-gray-900 mb-3">Dues Information</h4>
                 {isEditMode ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700">Last Paid</label>
-                      <input
-                        type="date"
-                        value={editedChurch.lastPaymentDate ? editedChurch.lastPaymentDate.split('T')[0] : ''}
-                        onChange={(e) => setEditedChurch({ ...editedChurch, lastPaymentDate: e.target.value ? new Date(e.target.value).toISOString() : undefined })}
-                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                      />
+                  <div className="space-y-4">
+                    {/* Dues Exempt Checkbox */}
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                      <label className="flex items-start cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={editedChurch.duesExempt || false}
+                          onChange={(e) => setEditedChurch({ ...editedChurch, duesExempt: e.target.checked })}
+                          className="mt-1 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                        />
+                        <div className="ml-3">
+                          <span className="text-sm font-medium text-blue-900">Exempt from Dues</span>
+                          <p className="text-xs text-blue-700 mt-1">
+                            Check this box to exempt this church from paying dues. The church will remain always active and will not be checked for delinquency or due dates.
+                          </p>
+                        </div>
+                      </label>
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700">Next Due Date</label>
-                      <input
-                        type="date"
-                        value={editedChurch.nextDueDate ? editedChurch.nextDueDate.split('T')[0] : ''}
-                        onChange={(e) => setEditedChurch({ ...editedChurch, nextDueDate: e.target.value ? new Date(e.target.value).toISOString() : undefined })}
-                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                      />
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700">Last Paid</label>
+                        <input
+                          type="date"
+                          value={editedChurch.lastPaymentDate ? editedChurch.lastPaymentDate.split('T')[0] : ''}
+                          onChange={(e) => setEditedChurch({ ...editedChurch, lastPaymentDate: e.target.value ? new Date(e.target.value).toISOString() : undefined })}
+                          className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                          disabled={editedChurch.duesExempt}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700">Next Due Date</label>
+                        <input
+                          type="date"
+                          value={editedChurch.nextDueDate ? editedChurch.nextDueDate.split('T')[0] : ''}
+                          onChange={(e) => setEditedChurch({ ...editedChurch, nextDueDate: e.target.value ? new Date(e.target.value).toISOString() : undefined })}
+                          className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                          disabled={editedChurch.duesExempt}
+                        />
+                      </div>
                     </div>
                   </div>
                 ) : (
-                  <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <InfoRow label="Last Paid" value={church.lastPaymentDate ? new Date(church.lastPaymentDate).toLocaleDateString() : 'N/A'} />
-                    <InfoRow label="Next Due Date" value={church.nextDueDate ? new Date(church.nextDueDate).toLocaleDateString() : 'N/A'} />
-                  </dl>
+                  <div className="space-y-4">
+                    {church.duesExempt && (
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <div className="flex items-center">
+                          <ShieldCheck className="w-5 h-5 text-blue-600 mr-2" />
+                          <span className="text-sm font-medium text-blue-900">This church is exempt from dues</span>
+                        </div>
+                        <p className="text-xs text-blue-700 mt-1 ml-7">
+                          No delinquency checks will be performed. Church remains always active.
+                        </p>
+                      </div>
+                    )}
+                    <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <InfoRow label="Last Paid" value={church.lastPaymentDate ? new Date(church.lastPaymentDate).toLocaleDateString() : 'N/A'} />
+                      <InfoRow label="Next Due Date" value={church.nextDueDate ? new Date(church.nextDueDate).toLocaleDateString() : 'N/A'} />
+                    </dl>
+                  </div>
                 )}
               </div>
 
@@ -1907,8 +2662,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         <input
                           type="url"
                           value={editedChurch.connections?.[platform] || ''}
-                          onChange={(e) => setEditedChurch({ 
-                            ...editedChurch, 
+                          onChange={(e) => setEditedChurch({
+                            ...editedChurch,
                             connections: { ...editedChurch.connections, [platform]: e.target.value }
                           })}
                           className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
@@ -1965,7 +2720,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   };
 
   // Get all leaders from approved churches
-  const allLeaders = approvedApps.flatMap(church => 
+  const allLeaders = approvedApps.flatMap(church =>
     (church.leaders || []).map(leader => ({
       ...leader,
       churchName: church.churchName,
@@ -1978,7 +2733,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     return (
       <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={onClose}>
         <div className="flex items-center justify-center min-h-screen px-4 py-6">
-          <div 
+          <div
             className="bg-white rounded-lg shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
@@ -1988,7 +2743,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 <X className="w-6 h-6" />
               </button>
             </div>
-            
+
             <div className="p-6">
               {loadingChurchAnalytics ? (
                 <div className="flex justify-center p-12">
@@ -2037,7 +2792,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           <span className="text-gray-600">Contact Inquiries</span>
                           <span className="font-bold text-gray-900">{churchAnalyticsData.last30Days?.contacts || 0}</span>
                         </div>
-                         <div className="flex justify-between">
+                        <div className="flex justify-between">
                           <span className="text-gray-600">Social Clicks</span>
                           <span className="font-bold text-gray-900">{churchAnalyticsData.last30Days?.socialClicks || 0}</span>
                         </div>
@@ -2070,14 +2825,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
                   {/* Engagement Insights */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                     <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
                       <h4 className="font-bold text-gray-900 mb-2 flex items-center">
                         <Clock className="w-4 h-4 mr-2 text-gray-500" />
                         Last Activity
                       </h4>
                       <p className="text-gray-600">
-                        {churchAnalyticsData.lastActivity 
-                          ? new Date(churchAnalyticsData.lastActivity).toLocaleString() 
+                        {churchAnalyticsData.lastActivity
+                          ? new Date(churchAnalyticsData.lastActivity).toLocaleString()
                           : 'No activity recorded yet'}
                       </p>
                     </div>
@@ -2109,6 +2864,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     );
   };
 
+  // Calculate recipient counts for display
+  const getRecipientCount = (type: typeof recipientType): number => {
+    if (type === 'test') return 1;
+    if (type === 'churches') {
+      return approvedApps
+        .map(app => app.applicantEmail)
+        .filter(email => email && email.includes('@')).length;
+    }
+    if (type === 'leaders') {
+      return allLeaders
+        .map(leader => leader.email)
+        .filter(email => email && email.includes('@')).length;
+    }
+    if (type === 'all') {
+      const churchEmails = approvedApps
+        .map(app => app.applicantEmail)
+        .filter(email => email && email.includes('@'));
+      const leaderEmails = allLeaders
+        .map(leader => leader.email)
+        .filter(email => email && email.includes('@'));
+      const uniqueRecipients = [...new Set([...churchEmails, ...leaderEmails])];
+      return uniqueRecipients.length;
+    }
+    return 0;
+  };
+
   const handleSendEmail = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!confirm('Are you sure you want to send this email? This action cannot be undone.')) return;
@@ -2127,6 +2908,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         recipients = allLeaders
           .map(leader => leader.email)
           .filter(email => email && email.includes('@'));
+      } else if (recipientType === 'all') {
+        // ALL: Combine churches and leaders
+        const churchEmails = approvedApps
+          .map(app => app.applicantEmail)
+          .filter(email => email && email.includes('@'));
+        const leaderEmails = allLeaders
+          .map(leader => leader.email)
+          .filter(email => email && email.includes('@'));
+        recipients = [...churchEmails, ...leaderEmails];
       } else {
         // Test mode - send to current user
         if (user?.email) recipients = [user.email];
@@ -2140,7 +2930,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       }
 
       console.log(`Sending email to ${recipients.length} recipients...`);
-      
+
       const result = await sendEmail(recipients, emailSubject, emailBody, senderProfile);
       console.log('Email sent result:', result);
 
@@ -2148,7 +2938,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         success: true,
         message: `Successfully sent to ${recipients.length} recipients!`
       });
-      
+
       // Clear form on success
       if (recipientType === 'test') {
         // Don't clear for test, easier to re-test
@@ -2249,11 +3039,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
             <nav className="flex space-x-8">
               <button
                 onClick={() => setCurrentView('statistics')}
-                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                  currentView === 'statistics'
-                    ? 'border-brand-600 text-brand-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${currentView === 'statistics'
+                  ? 'border-brand-600 text-brand-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
               >
                 <div className="flex items-center">
                   <BarChart3 className="w-4 h-4 mr-2" />
@@ -2262,21 +3051,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               </button>
               <button
                 onClick={() => setCurrentView('member-pending')}
-                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                  currentView.startsWith('member-')
-                    ? 'border-brand-600 text-brand-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${currentView.startsWith('member-')
+                  ? 'border-brand-600 text-brand-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
               >
                 Member Management
               </button>
               <button
                 onClick={() => setCurrentView('jobs')}
-                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                  currentView === 'jobs'
-                    ? 'border-brand-600 text-brand-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${currentView === 'jobs'
+                  ? 'border-brand-600 text-brand-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
               >
                 <div className="flex items-center">
                   <Briefcase className="w-4 h-4 mr-2" />
@@ -2285,21 +3072,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               </button>
               <button
                 onClick={() => setCurrentView('email')}
-                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                  currentView === 'email'
-                    ? 'border-brand-600 text-brand-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${currentView === 'email'
+                  ? 'border-brand-600 text-brand-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
               >
                 Email Center
               </button>
               <button
                 onClick={() => setCurrentView('settings-email')}
-                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                  currentView.startsWith('settings-')
-                    ? 'border-brand-600 text-brand-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${currentView.startsWith('settings-')
+                  ? 'border-brand-600 text-brand-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
               >
                 <div className="flex items-center">
                   <Settings className="w-4 h-4 mr-2" />
@@ -2315,11 +3100,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               <nav className="flex space-x-6">
                 <button
                   onClick={() => setCurrentView('member-pending')}
-                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
-                    currentView === 'member-pending'
-                      ? 'border-brand-500 text-brand-700'
-                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
-                  }`}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'member-pending'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
                 >
                   Pending
                   <span className="ml-2 bg-yellow-100 text-yellow-800 py-0.5 px-1.5 rounded-full text-xs">
@@ -2327,12 +3111,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   </span>
                 </button>
                 <button
+                  onClick={() => setCurrentView('member-provisional')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'member-provisional'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
+                >
+                  Provisional
+                  <span className="ml-2 bg-orange-100 text-orange-800 py-0.5 px-1.5 rounded-full text-xs">
+                    {provisionalApps.length}
+                  </span>
+                </button>
+                <button
                   onClick={() => setCurrentView('member-active')}
-                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
-                    currentView === 'member-active'
-                      ? 'border-brand-500 text-brand-700'
-                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
-                  }`}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'member-active'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
                 >
                   Active
                   <span className="ml-2 bg-green-100 text-green-800 py-0.5 px-1.5 rounded-full text-xs">
@@ -2340,12 +3135,39 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   </span>
                 </button>
                 <button
+                  onClick={() => setCurrentView('member-delinquent')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'member-delinquent'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
+                >
+                  Delinquent
+                  <span className="ml-2 bg-orange-100 text-orange-800 py-0.5 px-1.5 rounded-full text-xs">
+                    {applications.filter(a =>
+                      a.status === ApplicationStatus.APPROVED || a.status === ApplicationStatus.DELINQUENT
+                    ).filter(app => {
+                      // Skip churches exempt from dues
+                      if (app.duesExempt) return false;
+                      // Explicit DELINQUENT status
+                      if (app.status === ApplicationStatus.DELINQUENT) return true;
+                      // Manual override
+                      if (app.isManuallyDelinquent) return true;
+                      // Auto: overdue without auto-renewal
+                      if (!app.stripeSubscriptionId && app.nextDueDate) {
+                        const today = new Date();
+                        const dueDate = new Date(app.nextDueDate);
+                        return dueDate < today;
+                      }
+                      return false;
+                    }).length}
+                  </span>
+                </button>
+                <button
                   onClick={() => setCurrentView('member-leaders')}
-                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
-                    currentView === 'member-leaders'
-                      ? 'border-brand-500 text-brand-700'
-                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
-                  }`}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'member-leaders'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
                 >
                   Leaders
                   <span className="ml-2 bg-gray-100 text-gray-900 py-0.5 px-1.5 rounded-full text-xs">
@@ -2354,11 +3176,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 </button>
                 <button
                   onClick={() => setCurrentView('member-rejected')}
-                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
-                    currentView === 'member-rejected'
-                      ? 'border-brand-500 text-brand-700'
-                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
-                  }`}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'member-rejected'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
                 >
                   Rejected
                   <span className="ml-2 bg-red-100 text-red-800 py-0.5 px-1.5 rounded-full text-xs">
@@ -2375,11 +3196,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               <nav className="flex space-x-6">
                 <button
                   onClick={() => setCurrentView('jobs')}
-                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
-                    currentView === 'jobs'
-                      ? 'border-brand-500 text-brand-700'
-                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
-                  }`}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'jobs'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
                 >
                   All Job Listings
                   <span className="ml-2 bg-blue-100 text-blue-800 py-0.5 px-1.5 rounded-full text-xs">
@@ -2397,11 +3217,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               <nav className="flex space-x-6">
                 <button
                   onClick={() => setCurrentView('settings-email')}
-                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
-                    currentView === 'settings-email'
-                      ? 'border-brand-500 text-brand-700'
-                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
-                  }`}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'settings-email'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
                 >
                   <div className="flex items-center">
                     <Mail className="w-3 h-3 mr-1.5" />
@@ -2410,11 +3229,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 </button>
                 <button
                   onClick={() => setCurrentView('settings-application')}
-                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
-                    currentView === 'settings-application'
-                      ? 'border-brand-500 text-brand-700'
-                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
-                  }`}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'settings-application'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
                 >
                   <div className="flex items-center">
                     <BookOpen className="w-3 h-3 mr-1.5" />
@@ -2423,11 +3241,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 </button>
                 <button
                   onClick={() => setCurrentView('settings-content')}
-                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
-                    currentView === 'settings-content'
-                      ? 'border-brand-500 text-brand-700'
-                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
-                  }`}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'settings-content'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
                 >
                   <div className="flex items-center">
                     <BookOpen className="w-3 h-3 mr-1.5" />
@@ -2436,11 +3253,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 </button>
                 <button
                   onClick={() => setCurrentView('settings-users')}
-                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
-                    currentView === 'settings-users'
-                      ? 'border-brand-500 text-brand-700'
-                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
-                  }`}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'settings-users'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
                 >
                   <div className="flex items-center">
                     <UserIcon className="w-3 h-3 mr-1.5" />
@@ -2449,15 +3265,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 </button>
                 <button
                   onClick={() => setCurrentView('settings-promo-codes')}
-                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${
-                    currentView === 'settings-promo-codes'
-                      ? 'border-brand-500 text-brand-700'
-                      : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
-                  }`}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'settings-promo-codes'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
                 >
                   <div className="flex items-center">
                     <ShieldCheck className="w-3 h-3 mr-1.5" />
                     Promo Codes
+                  </div>
+                </button>
+                <button
+                  onClick={() => setCurrentView('settings-benefits')}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs transition-colors ${currentView === 'settings-benefits'
+                    ? 'border-brand-500 text-brand-700'
+                    : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+                    }`}
+                >
+                  <div className="flex items-center">
+                    <Star className="w-3 h-3 mr-1.5" />
+                    Network Benefits
                   </div>
                 </button>
               </nav>
@@ -2491,10 +3318,103 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         </Button>
                       </div>
                     </div>
-                    
+
                     <div className="p-6 flex space-x-3 justify-end">
                       <Button variant="danger" onClick={() => handleReject(app)} disabled={processingId === app.id}><X className="w-4 h-4 mr-2" /> Reject</Button>
+                      <Button
+                        variant="secondary"
+                        onClick={() => handleProvisionalApprove(app)}
+                        isLoading={processingId === app.id}
+                        className="bg-orange-600 hover:bg-orange-700 text-white border-orange-600"
+                      >
+                        <Clock className="w-4 h-4 mr-2" /> Provisional Approve
+                      </Button>
                       <Button variant="primary" onClick={() => handleApprove(app)} isLoading={processingId === app.id}><ShieldCheck className="w-4 h-4 mr-2" /> Approve & Add to Map</Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Provisional Applications View */}
+        {currentView === 'member-provisional' && (
+          <section>
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">Provisional Applications</h2>
+            <p className="text-gray-600 mb-6">Churches that have been approved but haven't paid dues yet.</p>
+            {provisionalApps.length === 0 ? (
+              <div className="bg-white p-12 rounded-lg shadow-sm text-center border-2 border-dashed border-gray-200">
+                <Clock className="w-12 h-12 text-orange-400 mx-auto mb-3 opacity-50" />
+                <div className="text-gray-500 italic">No provisional applications.</div>
+              </div>
+            ) : (
+              <div className="space-y-8">
+                {provisionalApps.map(app => (
+                  <div key={app.id} className="bg-white rounded-lg shadow-lg overflow-hidden border border-orange-200">
+                    <div className="p-6 bg-orange-50/50 border-b border-orange-100 flex justify-between items-start">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-1">
+                          <h3 className="text-2xl font-bold font-serif text-gray-900">{app.churchName}</h3>
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+                            Provisional
+                          </span>
+                        </div>
+                        <div className="flex items-center text-gray-600 mt-2"><MapPin className="w-4 h-4 mr-2 flex-shrink-0" />{formatAddress(app.churchAddress)}</div>
+                      </div>
+                      <div className="flex gap-2 ml-4">
+                        <Button variant="outline" onClick={() => setViewingChurch(app)} className="text-sm">
+                          <Eye className="w-4 h-4 mr-2" />
+                          View Details
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="p-6">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                        <InfoRow label="Applicant" value={`${app.applicantFirstName} ${app.applicantLastName}`} />
+                        <InfoRow label="Email" value={app.applicantEmail} />
+                        <InfoRow label="Phone" value={app.churchPhone} />
+                      </div>
+
+                      <div className="p-4 bg-yellow-50 rounded-md border border-yellow-200 mb-6 text-sm text-yellow-800 flex items-start">
+                        <AlertTriangle className="w-5 h-5 mr-3 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <strong>Awaiting Payment:</strong> This church has access to the portal specifically to pay dues.
+                          Once they pay, they will automatically move to the "Active" list.
+                        </div>
+                      </div>
+
+                      <div className="flex space-x-3 justify-end pt-4 border-t">
+                        <Button
+                          variant="secondary"
+                          onClick={async () => {
+                            if (!confirm(`Resend portal invite email to ${app.applicantEmail} for ${app.churchName}?`)) return;
+                            setResendingProvisionalEmail(app.id);
+                            try {
+                              await resendSystemEmail(app.id, 'application_provisional_approved');
+                              alert('Portal invite email resent successfully!');
+                            } catch (error: any) {
+                              console.error("Error resending portal invite:", error);
+                              alert(`Failed to resend email: ${error.message || 'Unknown error'}`);
+                            } finally {
+                              setResendingProvisionalEmail(null);
+                            }
+                          }}
+                          isLoading={resendingProvisionalEmail === app.id}
+                          className="text-gray-600"
+                        >
+                          <Mail className="w-4 h-4 mr-2" /> Resend Portal Invite
+                        </Button>
+                        <Button
+                          variant="primary"
+                          onClick={() => handleManualApprove(app)}
+                          isLoading={processingId === app.id}
+                          className="bg-green-600 hover:bg-green-700 border-green-600"
+                        >
+                          <ShieldCheck className="w-4 h-4 mr-2" /> Manually Approve (Bypass Payment)
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -2516,6 +3436,100 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           </section>
         )}
 
+        {/* Network Benefits Settings View */}
+        {currentView === 'settings-benefits' && (
+          <section className="max-w-4xl mx-auto">
+            <div className="mb-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Network Benefits</h2>
+              <p className="text-gray-600">Edit the benefits displayed to churches in their portal.</p>
+            </div>
+
+            {loadingBenefits ? (
+              <div className="flex justify-center p-12"><RefreshCw className="w-8 h-8 animate-spin text-gray-400" /></div>
+            ) : (
+              <div className="space-y-6">
+                {networkBenefits.map((benefit, index) => (
+                  <div key={benefit.id} className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+                    <div className="bg-gray-50 px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                      <h3 className="text-lg font-bold text-gray-900">{benefit.title || 'Untitled Benefit'}</h3>
+                      <span className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded-full">{benefit.id}</span>
+                    </div>
+                    <div className="p-6 space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Title</label>
+                        <input
+                          type="text"
+                          value={benefit.title}
+                          onChange={(e) => {
+                            const updated = [...networkBenefits];
+                            updated[index].title = e.target.value;
+                            setNetworkBenefits(updated);
+                          }}
+                          className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                        <textarea
+                          value={benefit.description}
+                          onChange={(e) => {
+                            const updated = [...networkBenefits];
+                            updated[index].description = e.target.value;
+                            setNetworkBenefits(updated);
+                          }}
+                          rows={3}
+                          className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          {benefit.id === 'discounts' ? 'Note: The "G3CN" text will be bolded automatically if present.' : ''}
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Link Text</label>
+                          <input
+                            type="text"
+                            value={benefit.linkText || ''}
+                            onChange={(e) => {
+                              const updated = [...networkBenefits];
+                              updated[index].linkText = e.target.value;
+                              setNetworkBenefits(updated);
+                            }}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Link URL</label>
+                          <input
+                            type="text"
+                            value={benefit.linkUrl || ''}
+                            onChange={(e) => {
+                              const updated = [...networkBenefits];
+                              updated[index].linkUrl = e.target.value;
+                              setNetworkBenefits(updated);
+                            }}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                <div className="flex justify-end pt-4">
+                  <Button
+                    onClick={handleSaveBenefits}
+                    isLoading={isSavingBenefits}
+                    variant="primary"
+                  >
+                    Save All Changes
+                  </Button>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
         {/* Active Members View */}
         {currentView === 'member-active' && (
           <section>
@@ -2534,6 +3548,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 />
                 <Button
                   variant="primary"
+                  onClick={() => setShowAddChurchModal(true)}
+                  className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
+                >
+                  <PlusCircle className="w-3 h-3 mr-1" />
+                  Add Church
+                </Button>
+                <Button
+                  variant="primary"
                   onClick={handleAssignAllCoordinates}
                   isLoading={isImporting}
                   disabled={isImporting || approvedApps.filter(app => !app.coordinates).length === 0}
@@ -2542,7 +3564,67 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   <MapPin className="w-3 h-3 mr-1" />
                   Map All ({approvedApps.filter(app => !app.coordinates).length})
                 </Button>
-                
+
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    const churchesNeverLoggedIn = approvedApps.filter(app => {
+                      if (!app.userId) return false; // No account
+                      const user = allUsers.find(u => u.uid === app.userId);
+                      return user && !user.lastSignInTime; // Has account but never logged in
+                    });
+
+                    if (churchesNeverLoggedIn.length === 0) {
+                      alert('No churches with accounts that have never logged in!');
+                      return;
+                    }
+
+                    if (!confirm(`This will send password setup reminder emails to ${churchesNeverLoggedIn.length} churches that have accounts but have never logged in. Continue?`)) {
+                      return;
+                    }
+
+                    setIsProcessingPortalAccount(true);
+                    let successCount = 0;
+                    let failedCount = 0;
+                    const errors: string[] = [];
+
+                    for (const church of churchesNeverLoggedIn) {
+                      try {
+                        console.log(`Sending reminder to ${successCount + 1}/${churchesNeverLoggedIn.length}: ${church.churchName}`);
+                        await resendSystemEmail(church.id, 'portal_account_setup');
+                        successCount++;
+                        console.log(`✓ Successfully sent reminder to: ${church.churchName}`);
+                      } catch (error: any) {
+                        console.error(`Error sending reminder to ${church.churchName}:`, error);
+                        failedCount++;
+                        errors.push(`${church.churchName}: ${error.message || 'Unknown error'}`);
+                      }
+                    }
+
+                    setIsProcessingPortalAccount(false);
+                    const message = `Reminder Emails Sent!\n\nSuccessfully sent: ${successCount} emails\nFailed: ${failedCount}`;
+                    const detailedMessage = errors.length > 0
+                      ? `${message}\n\nErrors:\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? '\n...(and more)' : ''}`
+                      : message;
+
+                    alert(detailedMessage);
+                  }}
+                  isLoading={isProcessingPortalAccount}
+                  disabled={isProcessingPortalAccount || approvedApps.filter(app => {
+                    if (!app.userId) return false;
+                    const user = allUsers.find(u => u.uid === app.userId);
+                    return user && !user.lastSignInTime;
+                  }).length === 0}
+                  className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
+                >
+                  <Mail className="w-3 h-3 mr-1" />
+                  Send Reminders to Never Logged In ({approvedApps.filter(app => {
+                    if (!app.userId) return false;
+                    const user = allUsers.find(u => u.uid === app.userId);
+                    return user && !user.lastSignInTime;
+                  }).length})
+                </Button>
+
                 <Button
                   variant="outline"
                   onClick={async () => {
@@ -2578,7 +3660,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     const detailedMessage = errors.length > 0
                       ? `${message}\n\nErrors:\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? '\n...(and more)' : ''}`
                       : message;
-                    
+
                     alert(detailedMessage);
                   }}
                   isLoading={isProcessingPortalAccount}
@@ -2611,12 +3693,59 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 <Button
                   variant="outline"
                   onClick={async () => {
+                    const churchesWithTestStripe = applications.filter(app => {
+                      const customerId = app.stripeCustomerId || '';
+                      return customerId.startsWith('cus_') && !customerId.startsWith('cus_live_');
+                    });
+
+                    if (churchesWithTestStripe.length === 0) {
+                      alert('No churches with test mode Stripe data found!');
+                      return;
+                    }
+
+                    if (!confirm(`⚠️ This will clear test mode Stripe customer IDs from ${churchesWithTestStripe.length} churches.\n\nThese churches will then be able to set up their payment methods with live Stripe keys.\n\nContinue?`)) {
+                      return;
+                    }
+
+                    setIsImporting(true);
+                    try {
+                      const result = await clearTestStripeData();
+                      alert(
+                        `✅ ${result.message}\n\n` +
+                        `Total Scanned: ${result.scanned}\n` +
+                        `Test Mode Found: ${result.testModeFound}\n` +
+                        `Churches Updated: ${result.updated}\n\n` +
+                        `Churches can now set up their payment methods with live Stripe.`
+                      );
+                    } catch (error: any) {
+                      console.error("Error clearing test Stripe data:", error);
+                      alert(`Failed to clear test Stripe data: ${error.message || 'Unknown error'}`);
+                    } finally {
+                      setIsImporting(false);
+                    }
+                  }}
+                  isLoading={isImporting}
+                  disabled={isImporting || applications.filter(app => {
+                    const customerId = app.stripeCustomerId || '';
+                    return customerId.startsWith('cus_') && !customerId.startsWith('cus_live_');
+                  }).length === 0}
+                  className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
+                >
+                  <AlertTriangle className="w-3 h-3 mr-1" />
+                  Clear Test Stripe Data ({applications.filter(app => {
+                    const customerId = app.stripeCustomerId || '';
+                    return customerId.startsWith('cus_') && !customerId.startsWith('cus_live_');
+                  }).length})
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={async () => {
                     if (!confirm(`This will attempt to recalculate and update coordinates for all approved churches. This may take several minutes. Are you sure you want to proceed?`)) return;
 
                     setIsImporting(true); // Reuse loading state for spinner
                     let totalSuccess = 0;
                     let totalFailed = 0;
-                    
+
                     alert('Starting coordinate recalculation. This may take a few minutes. You will be notified when it is complete.');
 
                     const processNextBatch = async (lastDocId?: string) => {
@@ -2656,14 +3785,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       alert('No approved churches to delete.');
                       return;
                     }
-                    
+
                     const confirmText = `DELETE ALL ${approvedApps.length} CHURCHES`;
                     const userInput = prompt(
                       `⚠️ DANGER: This will permanently delete ALL ${approvedApps.length} approved churches!\n\n` +
                       `This action CANNOT be undone.\n\n` +
                       `To confirm, type exactly: ${confirmText}`
                     );
-                    
+
                     if (userInput !== confirmText) {
                       alert('Deletion cancelled. The confirmation text did not match.');
                       return;
@@ -2687,12 +3816,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     }
 
                     setIsImporting(false);
-                    
+
                     const message = `Delete Complete!\n\nSuccessfully deleted: ${successCount} churches\nFailed: ${failedCount}`;
                     const detailedMessage = errors.length > 0
                       ? `${message}\n\nErrors:\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? '\n...(and more)' : ''}`
                       : message;
-                    
+
                     alert(detailedMessage);
                   }}
                   isLoading={isImporting}
@@ -2733,6 +3862,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       <option value="city">City</option>
                       <option value="date">Date Added</option>
                       <option value="status">Map Status</option>
+                      <option value="renewal">Auto-Renewal</option>
+                      <option value="upcoming_dues">Upcoming Dues (No Auto-Renew)</option>
+                      <option value="lastLoggedIn">Last Logged In</option>
                     </select>
                     <button
                       onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
@@ -2757,46 +3889,250 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         <tr>
                           <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Church</th>
                           <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Contact</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Membership Status</th>
+                          <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Portal</th>
                           <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Map</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Logged In</th>
                           <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
-                        {filteredAndSortedApprovedApps.map(app => (
-                          <tr key={app.id} className="hover:bg-gray-50">
-                            <td className="px-6 py-4">
-                              <div className="font-medium text-gray-900">{app.churchName}</div>
-                            </td>
-                            <td className="px-6 py-4 text-sm text-gray-500">
-                              {`${app.churchAddress?.city || ''}, ${app.churchAddress?.country || ''}`}
-                            </td>
-                            <td className="px-6 py-4 text-sm text-gray-500">
-                              {app.applicantEmail}
-                            </td>
-                            <td className="px-6 py-4 text-center">
-                              <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium ${
-                                app.coordinates ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                              }`}>
-                                {app.coordinates ? '✓' : '✗'}
-                              </span>
-                            </td>
-                            <td className="px-6 py-4 text-right">
-                              <button 
-                                onClick={() => setViewingChurch(app)} 
-                                className="text-blue-600 hover:text-blue-800 text-sm font-medium"
-                              >
-                                View Profile
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                        {filteredAndSortedApprovedApps.map(app => {
+                          const hasAutoRenewal = !!app.stripeSubscriptionId;
+                          const nextDueDate = app.nextDueDate ? new Date(app.nextDueDate) : null;
+                          const today = new Date();
+                          const daysUntilDue = nextDueDate ? Math.ceil((nextDueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)) : null;
+                          const isDueSoon = daysUntilDue !== null && daysUntilDue <= 30 && daysUntilDue >= 0;
+                          const isOverdue = daysUntilDue !== null && daysUntilDue < 0;
+
+                          // Find the user associated with this church to get lastSignInTime
+                          const churchUser = app.userId ? allUsers.find(u => u.uid === app.userId) : null;
+                          const lastLoggedIn = churchUser?.lastSignInTime;
+
+                          return (
+                            <tr key={app.id} className="hover:bg-gray-50">
+                              <td className="px-6 py-4">
+                                <div className="font-medium text-gray-900">{app.churchName}</div>
+                                <div className="text-xs text-gray-500">{app.applicantEmail}</div>
+                              </td>
+                              <td className="px-6 py-4 text-sm text-gray-500">
+                                {`${app.churchAddress?.city || ''}, ${app.churchAddress?.state || ''}`}
+                              </td>
+                              <td className="px-6 py-4 text-sm">
+                                <div className="flex flex-col gap-1">
+                                  {hasAutoRenewal ? (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 w-fit">
+                                      <RefreshCw className="w-3 h-3 mr-1" />
+                                      Auto-Renewal
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800 w-fit">
+                                      Manual Renewal
+                                    </span>
+                                  )}
+
+                                  {nextDueDate && (
+                                    <div className={`text-xs font-medium flex items-center ${!hasAutoRenewal && isOverdue ? 'text-red-600' :
+                                      !hasAutoRenewal && isDueSoon ? 'text-orange-600' : 'text-gray-500'
+                                      }`}>
+                                      <Clock className="w-3 h-3 mr-1" />
+                                      {isOverdue ? `Overdue (${Math.abs(daysUntilDue!)} days)` :
+                                        daysUntilDue === 0 ? 'Due Today' :
+                                          `Due: ${nextDueDate.toLocaleDateString()}`}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-6 py-4 text-center">
+                                <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium ${app.userId ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+                                  }`}>
+                                  {app.userId ? '✓' : '✗'}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4 text-center">
+                                <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium ${app.coordinates ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                                  }`}>
+                                  {app.coordinates ? '✓' : '✗'}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4 text-sm text-gray-900">
+                                {lastLoggedIn ? (
+                                  <div>
+                                    <div className="font-medium">{new Date(lastLoggedIn).toLocaleDateString()}</div>
+                                    <div className="text-xs text-gray-500">{new Date(lastLoggedIn).toLocaleTimeString()}</div>
+                                  </div>
+                                ) : app.userId ? (
+                                  <span className="text-gray-400 italic">Never logged in</span>
+                                ) : (
+                                  <span className="text-gray-400 italic">No account</span>
+                                )}
+                              </td>
+                              <td className="px-6 py-4 text-right">
+                                <div className="flex justify-end gap-2">
+                                  {!app.userId && (
+                                    <Button
+                                      variant="primary"
+                                      onClick={() => handleCreatePortalAccount(app.id, app.applicantEmail, app.churchName)}
+                                      isLoading={isProcessingPortalAccount}
+                                      className="px-3 py-1.5 h-8 text-xs flex items-center gap-1.5"
+                                    >
+                                      <UserIcon className="w-3 h-3" />
+                                      Create Account
+                                    </Button>
+                                  )}
+                                  <button
+                                    onClick={() => setViewingChurch(app)}
+                                    className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                                  >
+                                    View Profile
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
                 </div>
               </>
             )}
+          </section>
+        )}
+
+        {/* Delinquent Members View */}
+        {currentView === 'member-delinquent' && (
+          <section>
+            <div className="flex items-start justify-between mb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">Delinquent Churches</h2>
+                <p className="text-gray-600">Churches with overdue dues payments or manually marked as delinquent</p>
+              </div>
+              {(() => {
+                const eligibleApps = applications.filter(a =>
+                  a.status === ApplicationStatus.APPROVED || a.status === ApplicationStatus.DELINQUENT
+                );
+                const delinquentApps = eligibleApps.filter(app => {
+                  if (app.status === ApplicationStatus.DELINQUENT) return true;
+                  if (app.isManuallyDelinquent) return true;
+                  if (!app.stripeSubscriptionId && app.nextDueDate) {
+                    const today = new Date();
+                    const dueDate = new Date(app.nextDueDate);
+                    return dueDate < today;
+                  }
+                  return false;
+                });
+                return delinquentApps.length > 0 && (
+                  <Button
+                    variant="primary"
+                    onClick={async () => {
+                      if (!confirm(`Are you sure you want to send dues reminder emails to all ${delinquentApps.length} delinquent churches? This action cannot be undone.`)) {
+                        return;
+                      }
+
+                      setIsProcessingPortalAccount(true);
+                      let successCount = 0;
+                      let failedCount = 0;
+                      const errors: string[] = [];
+
+                      for (let i = 0; i < delinquentApps.length; i++) {
+                        const church = delinquentApps[i];
+                        try {
+                          console.log(`Sending reminder to ${successCount + 1}/${delinquentApps.length}: ${church.churchName}`);
+                          await resendSystemEmail(church.id, 'dues_delinquent');
+                          successCount++;
+                          console.log(`✓ Successfully sent reminder to: ${church.churchName}`);
+                          
+                          // Add delay to avoid rate limiting (2 requests per second max)
+                          // Wait 600ms between sends (allows ~1.6 emails/second with safety margin)
+                          if (i < delinquentApps.length - 1) {
+                            await new Promise(resolve => setTimeout(resolve, 600));
+                          }
+                        } catch (error: any) {
+                          console.error(`Error sending reminder to ${church.churchName}:`, error);
+                          failedCount++;
+                          errors.push(`${church.churchName}: ${error.message || 'Unknown error'}`);
+                        }
+                      }
+
+                      setIsProcessingPortalAccount(false);
+                      const message = `Bulk Reminder Complete!\n\nSuccessfully sent: ${successCount} emails\nFailed: ${failedCount}`;
+                      const detailedMessage = errors.length > 0
+                        ? `${message}\n\nErrors:\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? '\n...(and more)' : ''}`
+                        : message;
+
+                      alert(detailedMessage);
+                    }}
+                    isLoading={isProcessingPortalAccount}
+                    className="flex items-center gap-2"
+                  >
+                    <Mail className="w-4 h-4" />
+                    Send All Reminders ({delinquentApps.length})
+                  </Button>
+                );
+              })()}
+            </div>
+
+            {(() => {
+              // Include both APPROVED and DELINQUENT status churches
+              const eligibleApps = applications.filter(a =>
+                a.status === ApplicationStatus.APPROVED || a.status === ApplicationStatus.DELINQUENT
+              );
+
+              const delinquentApps = eligibleApps.filter(app => {
+                // Skip churches exempt from dues
+                if (app.duesExempt) return false;
+                // Explicit DELINQUENT status
+                if (app.status === ApplicationStatus.DELINQUENT) return true;
+                // Manual override
+                if (app.isManuallyDelinquent) return true;
+                // Auto: overdue without auto-renewal
+                if (!app.stripeSubscriptionId && app.nextDueDate) {
+                  const today = new Date();
+                  const dueDate = new Date(app.nextDueDate);
+                  return dueDate < today;
+                }
+                return false;
+              });
+
+              return delinquentApps.length === 0 ? (
+                <div className="bg-white p-12 rounded-lg shadow-sm text-center border-2 border-dashed border-gray-200">
+                  <Check className="w-12 h-12 text-green-500 mx-auto mb-3 opacity-50" />
+                  <div className="text-gray-500 italic">No delinquent churches. All dues are current!</div>
+                </div>
+              ) : (
+                <div className="bg-white rounded-lg shadow overflow-hidden">
+                  <div className="px-6 py-3 bg-orange-50 border-b border-orange-200">
+                    <p className="text-sm text-orange-800 font-medium">
+                      {delinquentApps.length} {delinquentApps.length === 1 ? 'church' : 'churches'} with payment issues
+                    </p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Church</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Next Due Date</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reminder Emails</th>
+                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {delinquentApps.map(app => (
+                          <DelinquentChurchRow 
+                            key={app.id} 
+                            app={app}
+                            onViewChurch={setViewingChurch}
+                          />
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
           </section>
         )}
 
@@ -2826,11 +4162,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         <tr key={app.id} className="hover:bg-gray-50">
                           <td className="px-6 py-4 font-medium text-gray-900">{app.churchName}</td>
                           <td className="px-6 py-4 text-gray-500">
-                            {`${app.churchAddress?.city || ''}, ${app.churchAddress?.country || ''}`}
+                            {`${app.churchAddress?.city || ''}, ${app.churchAddress?.state || ''}`}
                           </td>
                           <td className="px-6 py-4 text-right">
-                            <button 
-                              onClick={() => setViewingChurch(app)} 
+                            <button
+                              onClick={() => setViewingChurch(app)}
                               className="text-blue-600 hover:text-blue-800 text-sm font-medium"
                             >
                               View Details
@@ -2895,14 +4231,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                             {job.jobType}
                           </td>
                           <td className="px-6 py-4">
-                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                              job.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                            }`}>
+                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${job.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                              }`}>
                               {job.status}
                             </span>
                           </td>
                           <td className="px-6 py-4 text-right">
-                            <Button 
+                            <Button
                               variant="danger"
                               onClick={() => {
                                 if (confirm(`Are you sure you want to delete the job listing: "${job.title}" by ${job.churchName}? This cannot be undone.`)) {
@@ -2976,7 +4311,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
                         </div>
                         <div className="flex justify-end">
-                          <Button 
+                          <Button
                             onClick={() => handleSaveTemplate('application_received')}
                             isLoading={savingTemplate === 'application_received'}
                           >
@@ -3022,7 +4357,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
                         </div>
                         <div className="flex justify-end">
-                          <Button 
+                          <Button
                             onClick={() => handleSaveTemplate('application_approved')}
                             isLoading={savingTemplate === 'application_approved'}
                           >
@@ -3068,7 +4403,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
                         </div>
                         <div className="flex justify-end">
-                          <Button 
+                          <Button
                             onClick={() => handleSaveTemplate('application_rejected')}
                             isLoading={savingTemplate === 'application_rejected'}
                           >
@@ -3121,7 +4456,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                             <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}{type === 'portal_account_setup' && ', {{resetLink}}'}</p>
                           </div>
                           <div className="flex justify-end">
-                            <Button 
+                            <Button
                               onClick={() => handleSaveTemplate(type)}
                               isLoading={savingTemplate === type}
                             >
@@ -3200,7 +4535,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                                 {field.rows && <div><strong>Rows:</strong> {field.rows}</div>}
                               </div>
                             </div>
-                            
+
                             {/* Field Controls */}
                             <div className="flex items-center gap-2 ml-4">
                               {/* Move Up/Down */}
@@ -3233,7 +4568,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                                 Copy
                               </Button>
                               <Button
-                                onClick={() => {setEditingField(field); setIsAddingField(false);}}
+                                onClick={() => { setEditingField(field); setIsAddingField(false); }}
                                 variant="primary"
                                 className="px-3 py-1.5 h-8 text-xs"
                               >
@@ -3290,7 +4625,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               <h2 className="text-2xl font-bold text-gray-900 mb-2">Main Page Content</h2>
               <p className="text-gray-600">Edit the banner description and informational sections on the home page.</p>
             </div>
-            
+
             <div className="space-y-6">
               {/* Banner Description */}
               <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
@@ -3313,7 +4648,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     />
                   </div>
                   <div className="flex justify-end">
-                    <Button 
+                    <Button
                       onClick={async () => {
                         setIsSavingContent(true);
                         // TODO: Save to Firestore
@@ -3379,7 +4714,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     </div>
                   ))}
                   <div className="flex justify-end pt-4 border-t">
-                    <Button 
+                    <Button
                       onClick={async () => {
                         setIsSavingContent(true);
                         // TODO: Save to Firestore
@@ -3445,7 +4780,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     </div>
                   ))}
                   <div className="flex justify-end pt-4 border-t">
-                    <Button 
+                    <Button
                       onClick={async () => {
                         setIsSavingContent(true);
                         // TODO: Save to Firestore
@@ -3473,7 +4808,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 <p className="text-gray-600">Real-time engagement metrics across all churches</p>
               </div>
               <div className="flex gap-2">
-                <Button 
+                <Button
                   onClick={async () => {
                     if (confirm("Are you sure you want to reset all analytics data? This action cannot be undone.")) {
                       try {
@@ -3493,7 +4828,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   <Trash2 className="w-4 h-4" />
                   Reset Data
                 </Button>
-                <Button 
+                <Button
                   onClick={loadGlobalAnalytics}
                   isLoading={loadingStats}
                   variant="outline"
@@ -3673,8 +5008,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
                         {filteredAndSortedStats.map(app => (
-                          <tr 
-                            key={app.id} 
+                          <tr
+                            key={app.id}
                             className="hover:bg-blue-50 cursor-pointer transition-colors"
                             onClick={() => {
                               setViewingStatsChurch({ id: app.id, name: app.churchName });
@@ -3715,29 +5050,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   </div>
                 </div>
 
-              {/* Instructions */}
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-                <div className="flex items-start">
-                  <BarChart3 className="w-6 h-6 text-blue-600 mt-0.5 mr-3 flex-shrink-0" />
-                  <div>
-                    <h3 className="text-lg font-semibold text-blue-900 mb-2">📈 How to View Analytics Data</h3>
-                    <p className="text-blue-800 mb-3">
-                      The tracking system is collecting data in real-time. To see analytics:
-                    </p>
-                    <ol className="list-decimal list-inside text-blue-800 space-y-2 text-sm">
-                      <li>Visit the public map at <strong>g3-church-network.web.app</strong></li>
-                      <li>Click on any church to view their profile (this logs a &quot;view&quot; event)</li>
-                      <li>Click &quot;Visit Website&quot; or social media links (logs &quot;visit&quot; and &quot;social_click&quot; events)</li>
-                      <li>Submit the contact form (logs a &quot;contact&quot; event)</li>
-                      <li>Check the Firebase Console - Firestore - <strong>churchStats</strong> and <strong>churchEvents</strong> collections to see the data</li>
-                    </ol>
-                    <p className="text-blue-700 mt-3 text-sm">
-                      <strong>Future Enhancement:</strong> You can add chart visualizations here using the recharts library and Cloud Functions (getChurchAnalytics, getGlobalAnalytics) to display interactive graphs of the tracking data.
-                    </p>
+                {/* Instructions */}
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
+                  <div className="flex items-start">
+                    <BarChart3 className="w-6 h-6 text-blue-600 mt-0.5 mr-3 flex-shrink-0" />
+                    <div>
+                      <h3 className="text-lg font-semibold text-blue-900 mb-2">📈 How to View Analytics Data</h3>
+                      <p className="text-blue-800 mb-3">
+                        The tracking system is collecting data in real-time. To see analytics:
+                      </p>
+                      <ol className="list-decimal list-inside text-blue-800 space-y-2 text-sm">
+                        <li>Visit the public map at <strong>network.g3min.org</strong></li>
+                        <li>Click on any church to view their profile (this logs a &quot;view&quot; event)</li>
+                        <li>Click &quot;Visit Website&quot; or social media links (logs &quot;visit&quot; and &quot;social_click&quot; events)</li>
+                        <li>Submit the contact form (logs a &quot;contact&quot; event)</li>
+                        <li>Check the Firebase Console - Firestore - <strong>churchStats</strong> and <strong>churchEvents</strong> collections to see the data</li>
+                      </ol>
+                      <p className="text-blue-700 mt-3 text-sm">
+                        <strong>Future Enhancement:</strong> You can add chart visualizations here using the recharts library and Cloud Functions (getChurchAnalytics, getGlobalAnalytics) to display interactive graphs of the tracking data.
+                      </p>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
             )}
           </section>
         )}
@@ -3770,12 +5105,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   {/* Recipient Selection */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">Send To</label>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                       <label className={`cursor-pointer border rounded-lg p-4 flex flex-col items-center justify-center gap-2 hover:bg-gray-50 transition-colors ${recipientType === 'test' ? 'border-brand-600 bg-brand-50 ring-1 ring-brand-600' : 'border-gray-200'}`}>
-                        <input 
-                          type="radio" 
-                          name="recipientType" 
-                          value="test" 
+                        <input
+                          type="radio"
+                          name="recipientType"
+                          value="test"
                           checked={recipientType === 'test'}
                           onChange={(e) => setRecipientType(e.target.value as any)}
                           className="sr-only"
@@ -3786,10 +5121,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       </label>
 
                       <label className={`cursor-pointer border rounded-lg p-4 flex flex-col items-center justify-center gap-2 hover:bg-gray-50 transition-colors ${recipientType === 'churches' ? 'border-brand-600 bg-brand-50 ring-1 ring-brand-600' : 'border-gray-200'}`}>
-                        <input 
-                          type="radio" 
-                          name="recipientType" 
-                          value="churches" 
+                        <input
+                          type="radio"
+                          name="recipientType"
+                          value="churches"
                           checked={recipientType === 'churches'}
                           onChange={(e) => setRecipientType(e.target.value as any)}
                           className="sr-only"
@@ -3800,10 +5135,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       </label>
 
                       <label className={`cursor-pointer border rounded-lg p-4 flex flex-col items-center justify-center gap-2 hover:bg-gray-50 transition-colors ${recipientType === 'leaders' ? 'border-brand-600 bg-brand-50 ring-1 ring-brand-600' : 'border-gray-200'}`}>
-                        <input 
-                          type="radio" 
-                          name="recipientType" 
-                          value="leaders" 
+                        <input
+                          type="radio"
+                          name="recipientType"
+                          value="leaders"
                           checked={recipientType === 'leaders'}
                           onChange={(e) => setRecipientType(e.target.value as any)}
                           className="sr-only"
@@ -3811,6 +5146,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         <UserIcon className="w-6 h-6 text-gray-400" />
                         <span className="font-medium text-gray-900">All Leaders</span>
                         <span className="text-xs text-gray-500">{allLeaders.length} Recipients</span>
+                      </label>
+
+                      <label className={`cursor-pointer border rounded-lg p-4 flex flex-col items-center justify-center gap-2 hover:bg-gray-50 transition-colors ${recipientType === 'all' ? 'border-brand-600 bg-brand-50 ring-1 ring-brand-600' : 'border-gray-200'}`}>
+                        <input
+                          type="radio"
+                          name="recipientType"
+                          value="all"
+                          checked={recipientType === 'all'}
+                          onChange={(e) => setRecipientType(e.target.value as any)}
+                          className="sr-only"
+                        />
+                        <Send className="w-6 h-6 text-gray-400" />
+                        <span className="font-medium text-gray-900">ALL</span>
+                        <span className="text-xs text-gray-500">{(() => {
+                          const churchEmails = approvedApps.map(app => app.applicantEmail).filter(email => email && email.includes('@'));
+                          const leaderEmails = allLeaders.map(leader => leader.email).filter(email => email && email.includes('@'));
+                          const uniqueRecipients = [...new Set([...churchEmails, ...leaderEmails])];
+                          return uniqueRecipients.length;
+                        })()} Recipients</span>
                       </label>
                     </div>
                   </div>
@@ -3830,16 +5184,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
                   {/* Body */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Message (HTML supported)</label>
-                    <textarea
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Message</label>
+                    <ReactQuill
+                      theme="snow"
                       value={emailBody}
-                      onChange={(e) => setEmailBody(e.target.value)}
-                      required
-                      rows={12}
+                      onChange={setEmailBody}
+                      modules={{
+                        toolbar: [
+                          [{ 'header': [1, 2, 3, false] }],
+                          ['bold', 'italic', 'underline', 'strike'],
+                          [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+                          [{ 'align': [] }],
+                          ['link'],
+                          [{ 'color': [] }, { 'background': [] }],
+                          ['clean']
+                        ]
+                      }}
+                      formats={[
+                        'header',
+                        'bold', 'italic', 'underline', 'strike',
+                        'list', 'bullet',
+                        'align',
+                        'link',
+                        'color', 'background'
+                      ]}
                       placeholder="Type your message here..."
-                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
+                      className="bg-white"
+                      style={{ height: '300px', marginBottom: '50px' }}
                     />
-                    <p className="mt-1 text-xs text-gray-500">You can use basic HTML tags (br, b, i, p, etc.) for formatting.</p>
+                    <p className="mt-1 text-xs text-gray-500">Use the toolbar above to format your message with rich text.</p>
                   </div>
 
                   {/* Status Message */}
@@ -3861,14 +5234,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
                   {/* Submit */}
                   <div className="flex justify-end pt-4 border-t">
-                    <Button 
-                      type="submit" 
-                      isLoading={isSendingEmail} 
+                    <Button
+                      type="submit"
+                      isLoading={isSendingEmail}
                       className="flex items-center"
                       variant="primary"
                     >
                       <Send className="w-4 h-4 mr-2" />
-                      {recipientType === 'test' ? 'Send Test Email' : `Send to ${recipientType === 'churches' ? approvedApps.length : allLeaders.length} Recipients`}
+                      {recipientType === 'test' ? 'Send Test Email' : `Send to ${getRecipientCount(recipientType)} Recipients`}
                     </Button>
                   </div>
                 </form>
@@ -3925,7 +5298,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 </div>
 
                 <div className="bg-white rounded-lg shadow overflow-hidden">
-                   <div className="px-6 py-3 bg-gray-50 border-b border-gray-200">
+                  <div className="px-6 py-3 bg-gray-50 border-b border-gray-200">
                     <p className="text-sm text-gray-600">
                       Showing {filteredAndSortedLeaders.length} of {allLeaders.length} elders
                       {leaderSearchQuery && ` matching "${leaderSearchQuery}"`}
@@ -3966,7 +5339,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                               </span>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap">
-                              <a 
+                              <a
                                 href={`mailto:${leader.email}`}
                                 className="text-brand-600 hover:text-brand-800 text-sm"
                               >
@@ -4072,11 +5445,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                               <div className="font-medium text-gray-900">{u.email}</div>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap">
-                              <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                                u.role === 'admin' ? 'bg-green-100 text-green-800' :
+                              <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${u.role === 'admin' ? 'bg-green-100 text-green-800' :
                                 u.role === 'church_user' ? 'bg-blue-100 text-blue-800' :
-                                'bg-gray-100 text-gray-800'
-                              }`}>
+                                  'bg-gray-100 text-gray-800'
+                                }`}>
                                 {u.role.replace('_', ' ')}
                               </span>
                             </td>
@@ -4106,7 +5478,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                                 ) : (
                                   <span className="text-gray-400 text-xs px-3 py-1.5">Current User</span>
                                 )}
-                                
+
+                                <Button
+                                  variant="outline"
+                                  onClick={() => {
+                                    setSelectedUserForPassword({ uid: u.uid, email: u.email });
+                                    setShowChangePasswordModal(true);
+                                  }}
+                                  className="px-3 py-1.5 h-8 text-xs"
+                                >
+                                  <Lock className="w-3 h-3 mr-1" />
+                                  Change Password
+                                </Button>
+
                                 {u.uid !== user?.uid && (
                                   <Button
                                     variant="danger"
@@ -4131,9 +5515,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         )}
       </div>
 
+      {/* Add Church Modal */}
+      {showAddChurchModal && (
+        <AddChurchModal
+          onClose={() => setShowAddChurchModal(false)}
+        />
+      )}
+
       {/* Church Detail Modal */}
       {viewingChurch && (
-        <ChurchDetailModal 
+        <ChurchDetailModal
           church={viewingChurch}
           onClose={() => setViewingChurch(null)}
           onCreatePortalAccount={handleCreatePortalAccount}
@@ -4146,7 +5537,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       {editingField && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={() => setEditingField(null)}>
           <div className="flex items-center justify-center min-h-screen px-4 py-6">
-            <div 
+            <div
               className="bg-white rounded-lg shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
@@ -4167,7 +5558,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   saveField(editingField);
                 }
               }} className="p-6 space-y-6">
-                
+
                 {/* Basic Info */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
@@ -4175,7 +5566,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     <input
                       type="text"
                       value={editingField.label}
-                      onChange={(e) => setEditingField({...editingField, label: e.target.value})}
+                      onChange={(e) => setEditingField({ ...editingField, label: e.target.value })}
                       required
                       className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                       placeholder="Enter field label"
@@ -4186,7 +5577,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     <input
                       type="text"
                       value={editingField.name}
-                      onChange={(e) => setEditingField({...editingField, name: e.target.value})}
+                      onChange={(e) => setEditingField({ ...editingField, name: e.target.value })}
                       required
                       className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                       placeholder="Enter field name (e.g., churchName)"
@@ -4200,7 +5591,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Field Type</label>
                     <select
                       value={editingField.type}
-                      onChange={(e) => setEditingField({...editingField, type: e.target.value as FormFieldType})}
+                      onChange={(e) => setEditingField({ ...editingField, type: e.target.value as FormFieldType })}
                       className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                     >
                       <option value="text">Text</option>
@@ -4220,7 +5611,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Section</label>
                     <select
                       value={editingField.section}
-                      onChange={(e) => setEditingField({...editingField, section: e.target.value})}
+                      onChange={(e) => setEditingField({ ...editingField, section: e.target.value })}
                       className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                     >
                       <option value="Account Setup">Account Setup</option>
@@ -4239,7 +5630,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       type="checkbox"
                       id="required"
                       checked={editingField.required}
-                      onChange={(e) => setEditingField({...editingField, required: e.target.checked})}
+                      onChange={(e) => setEditingField({ ...editingField, required: e.target.checked })}
                       className="h-4 w-4 text-black focus:ring-black border-gray-300 rounded"
                     />
                     <label htmlFor="required" className="ml-2 text-sm font-medium text-gray-700">
@@ -4251,7 +5642,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     <input
                       type="number"
                       value={editingField.order}
-                      onChange={(e) => setEditingField({...editingField, order: parseInt(e.target.value) || 0})}
+                      onChange={(e) => setEditingField({ ...editingField, order: parseInt(e.target.value) || 0 })}
                       className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                     />
                   </div>
@@ -4264,7 +5655,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     <input
                       type="text"
                       value={editingField.placeholder || ''}
-                      onChange={(e) => setEditingField({...editingField, placeholder: e.target.value})}
+                      onChange={(e) => setEditingField({ ...editingField, placeholder: e.target.value })}
                       className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                       placeholder="Enter placeholder text"
                     />
@@ -4274,7 +5665,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     <input
                       type="text"
                       value={editingField.description || ''}
-                      onChange={(e) => setEditingField({...editingField, description: e.target.value})}
+                      onChange={(e) => setEditingField({ ...editingField, description: e.target.value })}
                       className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                       placeholder="Enter help text"
                     />
@@ -4287,7 +5678,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Options (one per line)</label>
                     <textarea
                       value={(editingField.options || []).join('\n')}
-                      onChange={(e) => setEditingField({...editingField, options: e.target.value.split('\n').filter(o => o.trim())})}
+                      onChange={(e) => setEditingField({ ...editingField, options: e.target.value.split('\n').filter(o => o.trim()) })}
                       rows={4}
                       className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                       placeholder="Option 1&#10;Option 2&#10;Option 3"
@@ -4301,7 +5692,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     <input
                       type="number"
                       value={editingField.min || ''}
-                      onChange={(e) => setEditingField({...editingField, min: parseInt(e.target.value) || undefined})}
+                      onChange={(e) => setEditingField({ ...editingField, min: parseInt(e.target.value) || undefined })}
                       className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
                     />
                   </div>
@@ -4313,7 +5704,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     <input
                       type="number"
                       value={editingField.rows || 3}
-                      onChange={(e) => setEditingField({...editingField, rows: parseInt(e.target.value) || 3})}
+                      onChange={(e) => setEditingField({ ...editingField, rows: parseInt(e.target.value) || 3 })}
                       min="1"
                       max="20"
                       className="w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
@@ -4329,7 +5720,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       {editingField.label}
                       {editingField.required && <span className="text-red-500 ml-1">*</span>}
                     </label>
-                    
+
                     {editingField.type === 'text' && (
                       <input
                         type="text"
@@ -4414,7 +5805,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     {editingField.type === 'dynamic_array' && (
                       <div className="text-gray-500 italic">Dynamic array field (custom implementation required)</div>
                     )}
-                    
+
                     {editingField.description && (
                       <p className="text-xs text-gray-500 mt-1">{editingField.description}</p>
                     )}
@@ -4440,7 +5831,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       {showAddAdminModal && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={() => setShowAddAdminModal(false)}>
           <div className="flex items-center justify-center min-h-screen px-4 py-6">
-            <div 
+            <div
               className="bg-white rounded-lg shadow-2xl max-w-md w-full"
               onClick={(e) => e.stopPropagation()}
             >
@@ -4498,11 +5889,73 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         />
       )}
 
+      {/* Change User Password Modal */}
+      {showChangePasswordModal && selectedUserForPassword && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={() => setShowChangePasswordModal(false)}>
+          <div className="flex items-center justify-center min-h-screen px-4 py-6">
+            <div
+              className="bg-white rounded-lg shadow-2xl max-w-md w-full"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="bg-brand-900 px-6 py-4 flex items-center justify-between">
+                <h3 className="text-xl font-serif font-bold text-white">Change Password</h3>
+                <button onClick={() => setShowChangePasswordModal(false)} className="text-gray-300 hover:text-white">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              <form onSubmit={handleChangePassword} className="p-6 space-y-4">
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+                  <p className="text-sm text-blue-800">
+                    <strong>User:</strong> {selectedUserForPassword.email}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">New Password</label>
+                  <input
+                    type="password"
+                    value={newUserPassword}
+                    onChange={(e) => setNewUserPassword(e.target.value)}
+                    required
+                    minLength={6}
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    placeholder="••••••••"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Minimum 6 characters</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Confirm New Password</label>
+                  <input
+                    type="password"
+                    value={confirmUserPassword}
+                    onChange={(e) => setConfirmUserPassword(e.target.value)}
+                    required
+                    minLength={6}
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                    placeholder="••••••••"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-4 border-t">
+                  <Button type="button" variant="outline" onClick={() => setShowChangePasswordModal(false)}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" variant="primary" isLoading={isChangingPassword}>
+                    Change Password
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Edit Profile Modal */}
       {showProfileModal && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50" onClick={() => setShowProfileModal(false)}>
           <div className="flex items-center justify-center min-h-screen px-4 py-6">
-            <div 
+            <div
               className="bg-white rounded-lg shadow-2xl max-w-md w-full"
               onClick={(e) => e.stopPropagation()}
             >
@@ -4525,7 +5978,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                   />
                   <p className="text-xs text-gray-500 mt-1">Changing your email will require re-authentication</p>
                 </div>
-                
+
                 <div className="pt-4 border-t">
                   <p className="text-sm font-medium text-gray-700 mb-3">Change Password (optional)</p>
                   <div className="space-y-3">

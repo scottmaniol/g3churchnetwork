@@ -1,48 +1,48 @@
 import * as firebaseApp from 'firebase/app';
-import { 
-  getFirestore, 
-  collection, 
-  query, 
-  where, 
-  orderBy, 
-  onSnapshot, 
-  addDoc, 
-  doc, 
+import {
+  getFirestore,
+  collection,
+  query,
+  where,
+  orderBy,
+  onSnapshot,
+  addDoc,
+  doc,
   updateDoc,
   deleteDoc,
   getDoc,
   setDoc,
   Firestore
 } from 'firebase/firestore';
-import { 
-  getAuth, 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
   signOut,
   Auth,
   User,
   onAuthStateChanged
 } from 'firebase/auth';
-import { 
-  getStorage, 
+import {
+  getStorage,
   FirebaseStorage,
   ref,
   uploadBytes,
-  getDownloadURL 
+  getDownloadURL
 } from 'firebase/storage';
 import {
   getFunctions,
   httpsCallable,
   Functions
 } from 'firebase/functions';
-import { ChurchApplication, ApplicationStatus, EmailTemplate, EmailType, UserProfile, AdminUser, ChurchStatistics, ContactFormData, JobListing, JobApplication } from '../types';
+import { ChurchApplication, ApplicationStatus, EmailTemplate, EmailType, UserProfile, AdminUser, ChurchStatistics, ContactFormData, JobListing, JobApplication, NetworkBenefit } from '../types';
 
 // ------------------------------------------------------------------
 // FIREBASE CONFIGURATION
 // ------------------------------------------------------------------
 const firebaseConfig = {
   apiKey: "AIzaSyD-ivEktFlzvBMNJYQcBdM4cAoiofN1zP0",
-  authDomain: "g3-church-network.firebaseapp.com",
+  authDomain: "network.g3min.org",
   projectId: "g3-church-network",
   storageBucket: "g3-church-network.firebasestorage.app",
   messagingSenderId: "360689492450",
@@ -115,7 +115,7 @@ export const getProjectId = () => {
  */
 export const submitApplication = async (application: Omit<ChurchApplication, 'id'>) => {
   console.log("🚀 Starting submission...", { application });
-  
+
   try {
     console.log("📝 Attempting to add document to Firestore...");
     const docRef = await addDoc(collection(db, APPS_COLLECTION), application);
@@ -138,7 +138,7 @@ export const subscribeToPromoCodes = (
   onError: (error: Error) => void
 ) => {
   const q = query(collection(db, PROMO_CODES_COLLECTION), orderBy('createdAt', 'desc'));
-  
+
   return onSnapshot(q, (snapshot) => {
     const codes = snapshot.docs.map(doc => ({
       id: doc.id,
@@ -151,7 +151,7 @@ export const subscribeToPromoCodes = (
 export const addPromoCode = async (code: string) => {
   try {
     const docRef = doc(db, PROMO_CODES_COLLECTION, code);
-    await setDoc(docRef, { 
+    await setDoc(docRef, {
       createdAt: new Date()
     });
   } catch (error) {
@@ -194,7 +194,7 @@ export const ensureUserProfile = async (uid: string, email: string, churchId: st
   try {
     const docRef = doc(db, USER_PROFILES_COLLECTION, uid);
     const snapshot = await getDoc(docRef);
-    
+
     if (!snapshot.exists()) {
       console.log("User profile missing. Creating now...");
       const userProfile: UserProfile = {
@@ -209,13 +209,33 @@ export const ensureUserProfile = async (uid: string, email: string, churchId: st
       // Ensure churchId is set correctly if missing
       const data = snapshot.data();
       if (!data.churchId) {
-         console.log("User profile missing churchId. Updating...");
-         await updateDoc(docRef, { churchId });
+        console.log("User profile missing churchId. Updating...");
+        await updateDoc(docRef, { churchId });
       }
     }
   } catch (error) {
     console.error("Error ensuring user profile:", error);
     // Don't throw, just log. This is a repair operation.
+  }
+};
+
+/**
+ * DEBUG HELPER: Force create an admin profile for the current user.
+ * Use this to fix missing profile issues in development.
+ */
+export const forceCreateAdminProfile = async (uid: string, email: string) => {
+  try {
+    const docRef = doc(db, USER_PROFILES_COLLECTION, uid);
+    await setDoc(docRef, {
+      uid,
+      email,
+      role: 'admin',
+      churchId: null
+    }, { merge: true });
+    console.log("Admin profile force-created successfully.");
+  } catch (error) {
+    console.error("Error force-creating admin profile:", error);
+    throw error;
   }
 };
 
@@ -258,7 +278,7 @@ export const createUserProfile = async (uid: string, email: string, role: UserPr
 export const updateApplicationStatus = async (id: string, status: ApplicationStatus, coordinates?: { lat: number, lng: number }) => {
   try {
     const docRef = doc(db, APPS_COLLECTION, id);
-    await updateDoc(docRef, { 
+    await updateDoc(docRef, {
       status,
       ...(coordinates ? { coordinates } : {})
     });
@@ -276,7 +296,7 @@ export const subscribeToPublicApplications = (callback: (apps: ChurchApplication
     collection(db, APPS_COLLECTION),
     where('status', '==', 'APPROVED')
   );
-  
+
   return onSnapshot(q, async (snapshot) => {
     const churchesWithJobs = await Promise.all(snapshot.docs.map(async doc => {
       const church = {
@@ -305,7 +325,7 @@ export const subscribeToAllApplications = (callback: (apps: ChurchApplication[])
     collection(db, APPS_COLLECTION),
     orderBy('submittedAt', 'desc')
   );
-  
+
   return onSnapshot(q, (snapshot) => {
     const apps = snapshot.docs.map(doc => ({
       id: doc.id,
@@ -360,7 +380,25 @@ export const getJobListing = async (id: string): Promise<JobListing | null> => {
     const docRef = doc(db, JOBS_COLLECTION, id);
     const snapshot = await getDoc(docRef);
     if (snapshot.exists()) {
-      return { id: snapshot.id, ...snapshot.data() } as JobListing;
+      const job = { id: snapshot.id, ...snapshot.data() } as JobListing;
+
+      // If churchLogoUrl is missing, fetch it from the church application
+      if (!job.churchLogoUrl && job.churchId) {
+        try {
+          const churchDocRef = doc(db, APPS_COLLECTION, job.churchId);
+          const churchSnapshot = await getDoc(churchDocRef);
+          if (churchSnapshot.exists()) {
+            const churchData = churchSnapshot.data() as ChurchApplication;
+            if (churchData.status === 'APPROVED') {
+              job.churchLogoUrl = churchData.churchLogoUrl;
+            }
+          }
+        } catch (err) {
+          console.error(`Error fetching church details for job ${job.id}:`, err);
+        }
+      }
+
+      return job;
     }
     return null;
   } catch (error) {
@@ -518,6 +556,19 @@ export const submitJobApplication = async (application: Omit<JobApplication, 'id
 };
 
 /**
+ * Delete a job application.
+ */
+export const deleteJobApplication = async (id: string) => {
+  try {
+    const docRef = doc(db, JOB_APPLICATIONS_COLLECTION, id);
+    await deleteDoc(docRef);
+  } catch (error) {
+    console.error("Error deleting job application:", error);
+    throw error;
+  }
+};
+
+/**
  * Upload an applicant's resume.
  */
 export const uploadResume = async (file: File, jobId: string, applicantName: string) => {
@@ -627,12 +678,12 @@ export const getChurchByUserId = (userId: string, callback: (church: ChurchAppli
   console.log('🔍 Querying for church with userId:', userId);
   console.log('🔍 Current auth user:', auth.currentUser?.uid);
   console.log('🔍 Auth user email:', auth.currentUser?.email);
-  
+
   const q = query(
     collection(db, APPS_COLLECTION),
     where('userId', '==', userId)
   );
-  
+
   return onSnapshot(q, (snapshot) => {
     console.log('📊 Query snapshot received, empty:', snapshot.empty, 'size:', snapshot.size);
     if (snapshot.empty) {
@@ -660,6 +711,7 @@ export const updateChurchProfile = async (id: string, updates: Partial<ChurchApp
   try {
     const docRef = doc(db, APPS_COLLECTION, id);
     await updateDoc(docRef, updates);
+    console.log(`Profile ${id} updated. Shopify sync will be triggered.`);
   } catch (error) {
     console.error("Error updating church profile:", error);
     throw error;
@@ -738,6 +790,34 @@ export const getEmailTemplate = async (type: EmailType): Promise<EmailTemplate |
 };
 
 // ------------------------------------------------------------------
+// NETWORK BENEFITS
+// ------------------------------------------------------------------
+
+export const saveNetworkBenefits = async (benefits: NetworkBenefit[]) => {
+  try {
+    const docRef = doc(db, 'settings', 'network_benefits');
+    await setDoc(docRef, { benefits });
+  } catch (error) {
+    console.error("Error saving network benefits:", error);
+    throw error;
+  }
+};
+
+export const getNetworkBenefits = async (): Promise<NetworkBenefit[] | null> => {
+  try {
+    const docRef = doc(db, 'settings', 'network_benefits');
+    const snapshot = await getDoc(docRef);
+    if (snapshot.exists()) {
+      return snapshot.data().benefits as NetworkBenefit[];
+    }
+    return null;
+  } catch (error) {
+    console.error("Error getting network benefits:", error);
+    throw error;
+  }
+};
+
+// ------------------------------------------------------------------
 // CLOUD FUNCTIONS
 // ------------------------------------------------------------------
 
@@ -763,6 +843,17 @@ export const resendSystemEmail = async (churchId: string, type: EmailType) => {
   }
 };
 
+export const syncSubscriptionStatus = async (churchId: string) => {
+  try {
+    const fn = httpsCallable(functions, 'syncSubscriptionStatus');
+    const result = await fn({ churchId });
+    return result.data;
+  } catch (error) {
+    console.error("Error calling syncSubscriptionStatus function:", error);
+    throw error;
+  }
+};
+
 export const createStripeSetupIntent = async (email: string, name: string) => {
   try {
     const fn = httpsCallable(functions, 'createStripeSetupIntent');
@@ -779,11 +870,11 @@ export const verifyPromoCode = async (code: string): Promise<boolean> => {
   try {
     const projectId = getProjectId();
     let functionUrl = `https://us-central1-${projectId}.cloudfunctions.net/verifyPromoCode`;
-    
+
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-       // Assuming local emulator if localhost, though if not running it will fail.
-       // It's safer to try to fetch, and if it fails, fallback to Firestore.
-       functionUrl = `http://127.0.0.1:5001/${projectId}/us-central1/verifyPromoCode`;
+      // Assuming local emulator if localhost, though if not running it will fail.
+      // It's safer to try to fetch, and if it fails, fallback to Firestore.
+      functionUrl = `http://127.0.0.1:5001/${projectId}/us-central1/verifyPromoCode`;
     }
     console.log(`Attempting to verify via Cloud Function: ${functionUrl}`);
 
@@ -792,7 +883,7 @@ export const verifyPromoCode = async (code: string): Promise<boolean> => {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ data: { code } }), 
+      body: JSON.stringify({ data: { code } }),
     });
 
     if (!response.ok) {
@@ -818,6 +909,17 @@ export const verifyPromoCode = async (code: string): Promise<boolean> => {
       console.error("Error verifying promo code via Firestore:", dbError);
       return false;
     }
+  }
+};
+
+// Provisionally approve application (creates portal account, sends provisional approval email)
+export const provisionallyApproveApplication = async (applicationId: string) => {
+  try {
+    const provisionalApprove = httpsCallable(functions, 'provisionallyApproveApplication');
+    await provisionalApprove({ applicationId });
+  } catch (error: any) {
+    console.error("Error calling provisionallyApproveApplication:", error);
+    throw new Error(error.message || 'Failed to provisionally approve application');
   }
 };
 
@@ -919,6 +1021,36 @@ export const deleteUser = async (uid: string) => {
     return result.data;
   } catch (error) {
     console.error("Error deleting user:", error);
+    throw error;
+  }
+};
+
+/**
+ * Change a user's password.
+ * Requires admin privileges on the backend.
+ */
+export const changeUserPassword = async (uid: string, newPassword: string) => {
+  try {
+    const changePasswordCallable = httpsCallable(functions, 'changeUserPassword');
+    const result = await changePasswordCallable({ uid, newPassword });
+    return result.data;
+  } catch (error) {
+    console.error("Error changing user password:", error);
+    throw error;
+  }
+};
+
+/**
+ * Send a password reset email to a user.
+ * Requires admin privileges on the backend.
+ */
+export const sendPasswordResetEmail = async (email: string) => {
+  try {
+    const sendResetEmailCallable = httpsCallable(functions, 'sendPasswordResetEmail');
+    const result = await sendResetEmailCallable({ email });
+    return result.data;
+  } catch (error) {
+    console.error("Error sending password reset email:", error);
     throw error;
   }
 };
@@ -1040,7 +1172,7 @@ export const getChurchStatistics = async (churchId: string): Promise<ChurchStati
  */
 export const subscribeToChurchStatistics = (churchId: string, callback: (stats: ChurchStatistics | null) => void) => {
   const docRef = doc(db, 'churchStats', churchId);
-  
+
   return onSnapshot(docRef, (snapshot) => {
     if (snapshot.exists()) {
       const data = snapshot.data();
@@ -1066,12 +1198,9 @@ export const subscribeToChurchStatistics = (churchId: string, callback: (stats: 
 export const getAllChurchStatistics = async (): Promise<ChurchStatistics[]> => {
   try {
     const q = query(collection(db, 'churchStats'));
-    const snapshot = await onSnapshot(q, () => {});
-    
-    // Use getDocs instead of direct snapshot
     const { getDocs } = await import('firebase/firestore');
     const querySnapshot = await getDocs(q);
-    
+
     return querySnapshot.docs.map(doc => {
       const data = doc.data();
       return {
@@ -1093,7 +1222,7 @@ export const getAllChurchStatistics = async (): Promise<ChurchStatistics[]> => {
  */
 export const subscribeToAllChurchStatistics = (callback: (stats: ChurchStatistics[]) => void) => {
   const q = query(collection(db, 'churchStats'));
-  
+
   return onSnapshot(q, (snapshot) => {
     const stats = snapshot.docs.map(doc => {
       const data = doc.data();
@@ -1260,5 +1389,40 @@ export const trackChurchContact = async (churchId: string, source?: string) => {
     // Don't throw - tracking errors shouldn't break the UI
   } finally {
     console.groupEnd();
+  }
+};
+
+/**
+ * Clear test mode Stripe customer IDs from all churches (Admin Only)
+ */
+export const clearTestStripeData = async () => {
+  try {
+    const fn = httpsCallable(functions, 'clearTestStripeData');
+    const result = await fn();
+    return result.data as {
+      success: boolean;
+      message: string;
+      scanned: number;
+      updated: number;
+      testModeFound: number;
+    };
+  } catch (error) {
+    console.error("Error clearing test Stripe data:", error);
+    throw error;
+  }
+};
+
+/**
+ * Create a Stripe Checkout Session for initial payment setup
+ * Redirects churches to Stripe to set up their first recurring payment
+ */
+export const createStripeCheckoutSession = async (churchId: string, amount?: number) => {
+  try {
+    const fn = httpsCallable(functions, 'createStripeCheckoutSession');
+    const result = await fn({ churchId, amount });
+    return result.data as { url: string; sessionId: string };
+  } catch (error) {
+    console.error("Error creating Stripe Checkout session:", error);
+    throw error;
   }
 };

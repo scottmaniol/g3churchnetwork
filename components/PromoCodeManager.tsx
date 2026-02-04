@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Button } from './Button';
-import { Plus, Trash2, Loader2, Copy } from 'lucide-react';
+import { Plus, Trash2, Loader2, Copy, Check } from 'lucide-react';
 import { 
   subscribeToPromoCodes, 
   addPromoCode, 
@@ -18,7 +18,7 @@ export const PromoCodeManager: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [isAdding, setIsAdding] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = subscribeToPromoCodes((codes) => {
@@ -59,16 +59,15 @@ export const PromoCodeManager: React.FC = () => {
     }
   };
   
-  const getSpecialUrl = () => {
-    const url = new URL(window.location.href);
-    url.search = '?promo=true';
-    return url.toString();
+  const getSpecialUrl = (promoCode: string) => {
+    const baseUrl = window.location.origin;
+    return `${baseUrl}/apply?promo=${encodeURIComponent(promoCode)}`;
   };
 
-  const copyUrlToClipboard = () => {
-    navigator.clipboard.writeText(getSpecialUrl());
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const copyUrlToClipboard = (promoCode: string) => {
+    navigator.clipboard.writeText(getSpecialUrl(promoCode));
+    setCopiedCode(promoCode);
+    setTimeout(() => setCopiedCode(null), 2000);
   };
 
   if (isLoading) {
@@ -82,24 +81,14 @@ export const PromoCodeManager: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <h3 className="text-xl font-semibold text-gray-900">Manage Freebie Codes</h3>
+      <h3 className="text-xl font-semibold text-gray-900">Manage Freebie Promo Codes</h3>
 
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <p className="text-sm text-blue-800 font-medium mb-2">Special Application URL</p>
-        <div className="flex items-center space-x-2">
-          <input
-            type="text"
-            readOnly
-            value={getSpecialUrl()}
-            className="flex-grow p-2 border border-gray-300 rounded-md bg-white text-sm"
-          />
-          <Button variant="outline" onClick={copyUrlToClipboard}>
-            <Copy className="w-4 h-4 mr-2" />
-            {copied ? 'Copied!' : 'Copy'}
-          </Button>
-        </div>
-        <p className="text-xs text-blue-700 mt-2">
-          Share this URL with churches you want to allow to apply for free. The promo code field will only appear when this link is used.
+        <p className="text-sm text-blue-800 font-medium mb-2">How It Works</p>
+        <p className="text-xs text-blue-700">
+          Each promo code you create gets a unique application link. Share that link with a church, 
+          and when they visit it, the promo code will be automatically applied, allowing them to apply for free 
+          (no credit card required). Click "Copy Link" next to any code below to get its unique URL.
         </p>
       </div>
 
@@ -129,6 +118,9 @@ export const PromoCodeManager: React.FC = () => {
                 Promo Code
               </th>
               <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Special Link
+              </th>
+              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Created At
               </th>
               <th scope="col" className="relative px-6 py-3">
@@ -139,21 +131,50 @@ export const PromoCodeManager: React.FC = () => {
           <tbody className="bg-white divide-y divide-gray-200">
             {promoCodes.length === 0 ? (
               <tr>
-                <td colSpan={3} className="px-6 py-4 text-center text-sm text-gray-500">
-                  No promo codes found.
+                <td colSpan={4} className="px-6 py-4 text-center text-sm text-gray-500">
+                  No promo codes found. Create one above to get started.
                 </td>
               </tr>
             ) : (
               promoCodes.map((code) => (
                 <tr key={code.id}>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">{code.id}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-mono font-semibold text-gray-900">
+                    {code.id}
+                  </td>
+                  <td className="px-6 py-4 text-sm text-gray-500">
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={getSpecialUrl(code.id)}
+                        className="flex-grow p-1.5 text-xs border border-gray-200 rounded bg-gray-50 font-mono"
+                      />
+                      <button
+                        onClick={() => copyUrlToClipboard(code.id)}
+                        className="flex items-center px-3 py-1.5 text-xs font-medium text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded border border-blue-300 transition-colors"
+                      >
+                        {copiedCode === code.id ? (
+                          <>
+                            <Check className="w-3 h-3 mr-1" />
+                            Copied!
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3 mr-1" />
+                            Copy Link
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     {new Date(code.createdAt).toLocaleString()}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     <button
                       onClick={() => handleDeleteCode(code.id)}
-                      className="text-red-600 hover:text-red-900"
+                      className="text-red-600 hover:text-red-900 p-1"
+                      title="Delete code"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>

@@ -20,6 +20,7 @@ export const ChurchDetailModal: React.FC<ChurchDetailModalProps> = ({ church, on
   // Track view when modal opens
   useEffect(() => {
     if (church && viewTrackedRef.current !== church.id) {
+      console.log('Church Logo URL:', church.churchLogoUrl);
       document.body.style.overflow = 'hidden'; // Prevent background scrolling
       viewTrackedRef.current = church.id;
       trackChurchView(church.id).catch((error) => {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { JobListing } from '../types';
-import { MapPin, Briefcase, Calendar, DollarSign, Award, X, Loader2, Mail, Link as LinkIcon, Building2 } from 'lucide-react';
+import { MapPin, Briefcase, Calendar, DollarSign, Award, X, Loader2, Mail, Link as LinkIcon, Building2, Church } from 'lucide-react';
 import { getJobListing } from '../services/firebase';
 import { Button } from './Button';
 import ReactMarkdown from 'react-markdown'; // Assuming markdown rendering for descriptions
@@ -92,8 +92,8 @@ export const JobDetail: React.FC<JobDetailProps> = ({ jobId, onBack, onApplyClic
               {job.churchLogoUrl ? (
                 <img src={job.churchLogoUrl} alt={job.churchName} className="w-24 h-24 rounded-full object-cover border-4 border-white shadow-lg" />
               ) : (
-                <div className="w-24 h-24 rounded-full bg-black/20 flex items-center justify-center text-white text-sm font-semibold border-4 border-white shadow-lg">
-                  LOGO
+                <div className="w-24 h-24 rounded-full bg-white flex items-center justify-center text-gray-400 border-4 border-white shadow-lg">
+                  <Church className="w-10 h-10" />
                 </div>
               )}
               <div>

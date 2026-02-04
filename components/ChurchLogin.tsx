@@ -17,17 +17,20 @@ export const ChurchLogin: React.FC<ChurchLoginProps> = ({ onBack, onLoginSuccess
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    console.log("Login form submitted"); // Debug Log
     setError('');
     setLoading(true);
 
     try {
+      console.log("Attempting login with:", email); // Debug Log
       const userCredential = await loginAsChurch(email, password);
+      console.log("Login successful:", userCredential.user.uid); // Debug Log
       onLoginSuccess(userCredential.user.uid);
     } catch (err: any) {
       console.error('Church login error:', err);
-      
+
       let errorMessage = 'Failed to sign in. Please check your credentials.';
-      
+
       if (err.code === 'auth/user-not-found') {
         errorMessage = 'No account found with this email address.';
       } else if (err.code === 'auth/wrong-password') {
@@ -37,7 +40,7 @@ export const ChurchLogin: React.FC<ChurchLoginProps> = ({ onBack, onLoginSuccess
       } else if (err.code === 'auth/too-many-requests') {
         errorMessage = 'Too many failed attempts. Please try again later.';
       }
-      
+
       setError(errorMessage);
     } finally {
       setLoading(false);
@@ -46,8 +49,9 @@ export const ChurchLogin: React.FC<ChurchLoginProps> = ({ onBack, onLoginSuccess
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
+      {/* ... UI structure ... */}
       <div className="bg-white p-8 rounded-xl shadow-xl max-w-md w-full">
-        <button 
+        <button
           onClick={onBack}
           className="mb-6 flex items-center text-gray-600 hover:text-gray-900 transition-colors"
         >
@@ -111,9 +115,12 @@ export const ChurchLogin: React.FC<ChurchLoginProps> = ({ onBack, onLoginSuccess
         <div className="mt-4 text-center">
           <button
             onClick={async () => {
+              console.log("Forgot Password clicked"); // Debug Log
               if (email) {
                 try {
+                  console.log("Sending reset email to:", email); // Debug Log
                   await sendPasswordResetEmail(auth, email);
+                  console.log("Reset email sent successfully"); // Debug Log
                   alert('Password reset email sent! Check your inbox.');
                 } catch (err: any) {
                   console.error('Forgot password error:', err);
