@@ -525,6 +525,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'name' | 'city' | 'date' | 'status' | 'renewal' | 'upcoming_dues' | 'lastLoggedIn'>('name');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  
+  // Delinquent search state
+  const [delinquentSearchQuery, setDelinquentSearchQuery] = useState('');
 
   // State for leaders view
   const [leaderSearchQuery, setLeaderSearchQuery] = useState('');
@@ -2088,7 +2091,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           </Button>
                         </>
                       )}
-                      {church.status === ApplicationStatus.APPROVED && (
+                      {(church.status === ApplicationStatus.APPROVED || church.status === ApplicationStatus.DELINQUENT) && (
                         <>
                           {!church.userId ? (
                             <Button
@@ -4095,42 +4098,74 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 return false;
               });
 
-              return delinquentApps.length === 0 ? (
+              // Filter delinquent apps by search query
+              const filteredDelinquentApps = delinquentApps.filter(app => {
+                if (!delinquentSearchQuery) return true;
+                const query = delinquentSearchQuery.toLowerCase();
+                return (
+                  app.churchName.toLowerCase().includes(query) ||
+                  (app.churchAddress?.city || '').toLowerCase().includes(query) ||
+                  (app.churchAddress?.state || '').toLowerCase().includes(query) ||
+                  (app.churchAddress?.country || '').toLowerCase().includes(query) ||
+                  app.applicantEmail.toLowerCase().includes(query)
+                );
+              });
+
+              return filteredDelinquentApps.length === 0 && delinquentSearchQuery ? (
+                <div className="bg-white p-12 rounded-lg shadow-sm text-center border-2 border-dashed border-gray-200">
+                  <AlertTriangle className="w-12 h-12 text-gray-400 mx-auto mb-3 opacity-50" />
+                  <div className="text-gray-500 italic">No delinquent churches found matching "{delinquentSearchQuery}"</div>
+                </div>
+              ) : delinquentApps.length === 0 ? (
                 <div className="bg-white p-12 rounded-lg shadow-sm text-center border-2 border-dashed border-gray-200">
                   <Check className="w-12 h-12 text-green-500 mx-auto mb-3 opacity-50" />
                   <div className="text-gray-500 italic">No delinquent churches. All dues are current!</div>
                 </div>
               ) : (
-                <div className="bg-white rounded-lg shadow overflow-hidden">
-                  <div className="px-6 py-3 bg-orange-50 border-b border-orange-200">
-                    <p className="text-sm text-orange-800 font-medium">
-                      {delinquentApps.length} {delinquentApps.length === 1 ? 'church' : 'churches'} with payment issues
-                    </p>
+                <>
+                  {/* Search Control */}
+                  <div className="mb-4 bg-white p-4 rounded-lg shadow">
+                    <input
+                      type="text"
+                      placeholder="Search delinquent churches by name, city, or email..."
+                      value={delinquentSearchQuery}
+                      onChange={(e) => setDelinquentSearchQuery(e.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent"
+                    />
                   </div>
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-gray-200">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Church</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Next Due Date</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reminder Emails</th>
-                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white divide-y divide-gray-200">
-                        {delinquentApps.map(app => (
-                          <DelinquentChurchRow 
-                            key={app.id} 
-                            app={app}
-                            onViewChurch={setViewingChurch}
-                          />
-                        ))}
-                      </tbody>
-                    </table>
+
+                  <div className="bg-white rounded-lg shadow overflow-hidden">
+                    <div className="px-6 py-3 bg-orange-50 border-b border-orange-200">
+                      <p className="text-sm text-orange-800 font-medium">
+                        Showing {filteredDelinquentApps.length} of {delinquentApps.length} {delinquentApps.length === 1 ? 'church' : 'churches'} with payment issues
+                        {delinquentSearchQuery && ` matching "${delinquentSearchQuery}"`}
+                      </p>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full divide-y divide-gray-200">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Church</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Next Due Date</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reminder Emails</th>
+                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-200">
+                          {filteredDelinquentApps.map(app => (
+                            <DelinquentChurchRow 
+                              key={app.id} 
+                              app={app}
+                              onViewChurch={setViewingChurch}
+                            />
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                </div>
+                </>
               );
             })()}
           </section>
