@@ -893,56 +893,61 @@ exports.checkDuesAndReminders = (0, scheduler_1.onSchedule)({
             .get();
         for (const doc of snapshot.docs) {
             const data = doc.data();
+            // Skip dues-exempt churches
+            if (data.duesExempt)
+                continue;
             if (!data.nextDueDate)
                 continue;
             // Ensure nextDueDate is a valid date before using it
             const dueDate = new Date(data.nextDueDate);
             if (isNaN(dueDate.getTime())) {
                 console.warn(`Invalid nextDueDate found for doc ${doc.id}: ${data.nextDueDate}. Skipping reminder/delinquency check.`);
-                continue; // Skip this document if date is invalid
+                continue;
             }
             const daysUntilDue = Math.ceil((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-            // Handling Reminders for Manual Payers (One-time)
-            // Recurring subscriptions are handled by Stripe's own email system usually, 
-            // but we can add redundant reminders if needed. 
-            // For now, focusing on manual or if subscription failed/canceled.
+            // Determine the effective "next payment due" date for installment plans
+            const hasInstallmentPlan = data.paymentPlan && data.paymentPlan !== 'annual';
+            const installmentDueDate = hasInstallmentPlan && data.nextInstallmentDue ? new Date(data.nextInstallmentDue) : null;
+            const effectiveDueDate = installmentDueDate && !isNaN(installmentDueDate.getTime()) ? installmentDueDate : dueDate;
+            const daysUntilEffectiveDue = Math.ceil((effectiveDueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+            // GRACE_PERIOD: 7 days after installment due date before marking delinquent
+            const INSTALLMENT_GRACE_DAYS = 7;
             // If subscription is active, Stripe handles billing. 
             // If manual (one_time), we need to remind them.
             const isManual = data.paymentFrequency === 'one_time' || !data.paymentFrequency;
             if (isManual && data.status === 'APPROVED') {
-                // Use flexible range-based matching instead of exact days to handle scheduler timing drift
+                // Use the effective due date (installment due for installment plans, annual due for annual)
+                const daysToCheck = hasInstallmentPlan ? daysUntilEffectiveDue : daysUntilDue;
                 let templateType = '';
                 let reminderType = '';
-                // 30-day reminder: send if between 29-31 days before due
-                if (daysUntilDue >= 29 && daysUntilDue <= 31) {
+                // 30-day reminder: send if between 29-31 days before due (only for annual plans)
+                if (!hasInstallmentPlan && daysToCheck >= 29 && daysToCheck <= 31) {
                     templateType = 'dues_reminder_30';
                     reminderType = '30-day';
                 }
                 // 7-day reminder: send if between 6-8 days before due
-                else if (daysUntilDue >= 6 && daysUntilDue <= 8) {
-                    templateType = 'dues_reminder_7';
+                else if (daysToCheck >= 6 && daysToCheck <= 8) {
+                    templateType = hasInstallmentPlan ? 'dues_reminder_7' : 'dues_reminder_7';
                     reminderType = '7-day';
                 }
-                // Due today reminder: send if between -1 and 1 days (day before, day of, or day after)
-                else if (daysUntilDue >= -1 && daysUntilDue <= 1) {
-                    templateType = 'dues_reminder_0';
+                // Due today reminder: send if between -1 and 1 days
+                else if (daysToCheck >= -1 && daysToCheck <= 1) {
+                    templateType = hasInstallmentPlan ? 'dues_reminder_0' : 'dues_reminder_0';
                     reminderType = 'due-today';
                 }
-                // Only send if we haven't sent this specific reminder type recently
                 if (templateType) {
                     const lastReminderType = data.lastReminderType;
                     const lastReminderSent = data.lastReminderSent ? new Date(data.lastReminderSent) : null;
                     const daysSinceLastReminder = lastReminderSent
                         ? Math.floor((now.getTime() - lastReminderSent.getTime()) / (1000 * 60 * 60 * 24))
                         : 999;
-                    // Only send if we haven't sent this exact type within the last 3 days (prevents duplicates)
                     if (lastReminderType !== templateType || daysSinceLastReminder >= 3) {
-                        console.log(`[Pre-Due Reminder] Sending ${reminderType} reminder to ${data.churchName} (${daysUntilDue} days until due)`);
+                        const planLabel = data.paymentPlan === 'quarterly' ? 'quarterly' : data.paymentPlan === 'biannual' ? 'bi-annual' : 'annual';
+                        console.log(`[Pre-Due Reminder] Sending ${reminderType} ${planLabel} reminder to ${data.churchName} (${daysToCheck} days until due)`);
                         const template = await getTemplate(templateType);
                         const subject = replaceVariables(template.subject, data);
                         const body = replaceVariables(template.body, data);
                         await sendEmailBatch([data.applicantEmail], subject, body, SYSTEM_SENDER);
-                        // Update tracking
                         await doc.ref.update({
                             lastReminderSent: toSafeISOString(now),
                             lastReminderType: templateType,
@@ -956,9 +961,12 @@ exports.checkDuesAndReminders = (0, scheduler_1.onSchedule)({
                 }
             }
             // Handling Delinquency
-            if (daysUntilDue < 0) {
-                // It's overdue.
-                // If status is still APPROVED, mark DELINQUENT
+            // For installment plans: check if installment is overdue past grace period
+            // For annual plans: check if annual due date has passed
+            const isOverdue = hasInstallmentPlan
+                ? (daysUntilEffectiveDue < -INSTALLMENT_GRACE_DAYS) // Past grace period
+                : (daysUntilDue < 0); // Past due date
+            if (isOverdue) {
                 if (data.status === 'APPROVED') {
                     await doc.ref.update({
                         status: 'DELINQUENT',
@@ -966,29 +974,25 @@ exports.checkDuesAndReminders = (0, scheduler_1.onSchedule)({
                         reminderCount: 1,
                         lastReminderType: 'dues_delinquent'
                     });
-                    console.log(`[Delinquency] Marked ${data.churchName} as DELINQUENT`);
-                    // Send first delinquent email
+                    console.log(`[Delinquency] Marked ${data.churchName} as DELINQUENT (plan: ${data.paymentPlan || 'annual'})`);
                     const template = await getTemplate('dues_delinquent');
                     const subject = replaceVariables(template.subject, data);
                     const body = replaceVariables(template.body, data);
                     await sendEmailBatch([data.applicantEmail], subject, body, SYSTEM_SENDER);
                     console.log(`[Delinquency] Sent initial delinquent email to ${data.churchName}`);
                 }
-                // Send Weekly Delinquent Reminder using time-based tracking (not modulo)
-                // This ensures emails are sent reliably even if scheduler timing drifts
+                // Send Weekly Delinquent Reminder
                 if (data.status === 'DELINQUENT') {
                     const lastReminder = data.lastReminderSent ? new Date(data.lastReminderSent) : null;
                     const daysSinceLastReminder = lastReminder
                         ? Math.floor((now.getTime() - lastReminder.getTime()) / (1000 * 60 * 60 * 24))
-                        : 999; // Large number if no reminder sent yet
-                    // Send reminder if 7+ days have passed since last one (or if no reminder ever sent)
+                        : 999;
                     if (daysSinceLastReminder >= 7) {
                         console.log(`[Delinquency] Sending weekly reminder to ${data.churchName} (${daysSinceLastReminder} days since last)`);
                         const template = await getTemplate('dues_delinquent');
                         const subject = replaceVariables(template.subject, data);
                         const body = replaceVariables(template.body, data);
                         await sendEmailBatch([data.applicantEmail], subject, body, SYSTEM_SENDER);
-                        // Update tracking fields
                         await doc.ref.update({
                             lastReminderSent: toSafeISOString(now),
                             reminderCount: (data.reminderCount || 0) + 1,
@@ -2340,15 +2344,19 @@ exports.createStripeCheckoutSession = (0, https_1.onCall)({ cors: true }, async 
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "Must be authenticated.");
     }
-    const { churchId, amount } = request.data;
+    const { churchId, amount, paymentPlan } = request.data;
     if (!churchId) {
         throw new https_1.HttpsError("invalid-argument", "churchId is required.");
     }
-    // Validate amount (minimum $500)
+    // Validate amount (minimum $500 annual)
     const paymentAmount = amount || 500;
     if (paymentAmount < 500) {
-        throw new https_1.HttpsError("invalid-argument", "Minimum payment amount is $500.");
+        throw new https_1.HttpsError("invalid-argument", "Minimum annual payment amount is $500.");
     }
+    // Determine payment plan and installment amount
+    const plan = paymentPlan || 'annual';
+    const installmentCount = plan === 'quarterly' ? 4 : plan === 'biannual' ? 2 : 1;
+    const installmentAmount = Math.ceil(paymentAmount / installmentCount);
     try {
         // Get church data
         const docRef = db.collection('applications').doc(churchId);
@@ -2364,7 +2372,7 @@ exports.createStripeCheckoutSession = (0, https_1.onCall)({ cors: true }, async 
         if (request.auth.uid !== churchData.userId) {
             throw new https_1.HttpsError("permission-denied", "You do not have permission to manage this church's payment.");
         }
-        const amountInCents = Math.round(paymentAmount * 100);
+        const installmentAmountInCents = Math.round(installmentAmount * 100);
         // Check if customer already exists, if not create one
         let customerId = churchData.stripeCustomerId;
         if (!customerId) {
@@ -2383,19 +2391,24 @@ exports.createStripeCheckoutSession = (0, https_1.onCall)({ cors: true }, async 
             });
             console.log(`Created Stripe customer ${customerId} for church ${churchId}`);
         }
-        // Create a Price for the subscription
+        // Determine Stripe recurring interval based on payment plan
+        const planLabel = plan === 'quarterly' ? 'Quarterly' : plan === 'biannual' ? 'Bi-Annual' : 'Annual';
+        const recurringConfig = plan === 'quarterly'
+            ? { interval: 'month', interval_count: 3 }
+            : plan === 'biannual'
+                ? { interval: 'month', interval_count: 6 }
+                : { interval: 'year' };
+        // Create a Price for the subscription (installment amount per period)
         const price = await stripe.prices.create({
             currency: 'usd',
-            unit_amount: amountInCents,
-            recurring: {
-                interval: 'year',
-            },
+            unit_amount: installmentAmountInCents,
+            recurring: recurringConfig,
             product_data: {
-                name: `G3 Church Network Annual Dues - ${churchData.churchName}`,
+                name: `G3 Church Network ${planLabel} Dues - ${churchData.churchName}`,
                 metadata: {
                     churchId: churchId,
                     churchName: churchData.churchName,
-                    description: 'Annual membership dues for G3 Church Network'
+                    description: `${planLabel} membership dues for G3 Church Network ($${paymentAmount}/year)`
                 }
             },
         });
@@ -2410,12 +2423,15 @@ exports.createStripeCheckoutSession = (0, https_1.onCall)({ cors: true }, async 
                 },
             ],
             subscription_data: {
-                description: `G3 Church Network Annual Dues - ${churchData.churchName}`,
+                description: `G3 Church Network ${planLabel} Dues - ${churchData.churchName} ($${installmentAmount}/${plan === 'quarterly' ? 'quarter' : plan === 'biannual' ? '6 months' : 'year'})`,
                 metadata: {
                     churchId: churchId,
                     churchName: churchData.churchName,
                     type: 'annual_dues',
-                    applicantEmail: churchData.applicantEmail
+                    applicantEmail: churchData.applicantEmail,
+                    paymentPlan: plan,
+                    annualTotal: paymentAmount.toString(),
+                    installmentAmount: installmentAmount.toString()
                 }
             },
             success_url: `${process.env.APP_URL || 'https://network.g3min.org'}/church-login?session_id={CHECKOUT_SESSION_ID}&payment_success=true`,
@@ -2424,10 +2440,12 @@ exports.createStripeCheckoutSession = (0, https_1.onCall)({ cors: true }, async 
                 churchId: churchId,
                 churchName: churchData.churchName,
                 paymentAmount: paymentAmount.toString(),
+                paymentPlan: plan,
+                installmentAmount: installmentAmount.toString(),
                 type: 'annual_dues'
             }
         });
-        console.log(`Created Stripe Checkout session ${session.id} for church ${churchId}`);
+        console.log(`Created Stripe Checkout session ${session.id} for church ${churchId} (${planLabel} plan, $${installmentAmount}/installment, $${paymentAmount}/year)`);
         return {
             url: session.url,
             sessionId: session.id
@@ -2443,7 +2461,7 @@ exports.createStripeCheckoutSession = (0, https_1.onCall)({ cors: true }, async 
  * Processes Stripe events like successful checkout completions
  */
 exports.handleStripeWebhook = (0, https_1.onRequest)(async (req, res) => {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e, _f, _g;
     const sig = req.headers['stripe-signature'];
     if (!sig) {
         console.error('No Stripe signature found');
@@ -2485,13 +2503,35 @@ exports.handleStripeWebhook = (0, https_1.onRequest)(async (req, res) => {
                     // Calculate dates
                     const lastPaymentDate = toSafeISOString(new Date());
                     const nextDueDate = toSafeISOString(new Date(subscription.current_period_end * 1000));
+                    // Extract payment plan metadata
+                    const sessionPlan = ((_c = session.metadata) === null || _c === void 0 ? void 0 : _c.paymentPlan) || 'annual';
+                    const sessionInstallmentAmount = ((_d = session.metadata) === null || _d === void 0 ? void 0 : _d.installmentAmount) ? parseFloat(session.metadata.installmentAmount) : (paymentAmount ? parseFloat(paymentAmount) : 500);
+                    const annualTotal = paymentAmount ? parseFloat(paymentAmount) : 500;
+                    // Calculate next installment due date based on plan
+                    let nextInstallmentDue = nextDueDate; // For annual, same as nextDueDate
+                    if (sessionPlan === 'quarterly') {
+                        const nextInstallment = new Date();
+                        nextInstallment.setMonth(nextInstallment.getMonth() + 3);
+                        nextInstallmentDue = toSafeISOString(nextInstallment);
+                    }
+                    else if (sessionPlan === 'biannual') {
+                        const nextInstallment = new Date();
+                        nextInstallment.setMonth(nextInstallment.getMonth() + 6);
+                        nextInstallmentDue = toSafeISOString(nextInstallment);
+                    }
                     // Prepare update data
                     const updateData = {
                         stripeSubscriptionId: subscriptionId,
                         lastPaymentDate,
                         nextDueDate,
-                        paymentAmount: paymentAmount ? parseFloat(paymentAmount) : 500,
+                        paymentAmount: annualTotal,
                         paymentFrequency: 'yearly',
+                        paymentPlan: sessionPlan,
+                        installmentAmount: sessionInstallmentAmount,
+                        totalPaidInPeriod: sessionInstallmentAmount,
+                        annualPeriodStart: toSafeISOString(new Date()),
+                        installmentsPaidCount: 1,
+                        nextInstallmentDue,
                         updatedAt: toSafeISOString(new Date())
                     };
                     // ✅ FIX: Update status to APPROVED if currently PROVISIONAL or DELINQUENT
@@ -2561,18 +2601,110 @@ exports.handleStripeWebhook = (0, https_1.onRequest)(async (req, res) => {
                     if (!snapshot.empty) {
                         const churchDoc = snapshot.docs[0];
                         const churchData = churchDoc.data();
-                        const paidAt = (_c = invoice.status_transitions) === null || _c === void 0 ? void 0 : _c.paid_at;
+                        const paidAt = (_e = invoice.status_transitions) === null || _e === void 0 ? void 0 : _e.paid_at;
                         const lastPaymentDate = paidAt ? toSafeISOString(new Date(paidAt * 1000)) : toSafeISOString(new Date());
-                        await churchDoc.ref.update({
+                        const amountPaid = invoice.amount_paid ? invoice.amount_paid / 100 : ((churchData === null || churchData === void 0 ? void 0 : churchData.installmentAmount) || (churchData === null || churchData === void 0 ? void 0 : churchData.paymentAmount) || 0);
+                        // Determine payment plan from church data
+                        const currentPlan = (churchData === null || churchData === void 0 ? void 0 : churchData.paymentPlan) || 'annual';
+                        const currentInstallmentCount = currentPlan === 'quarterly' ? 4 : currentPlan === 'biannual' ? 2 : 1;
+                        const previousPaidCount = (churchData === null || churchData === void 0 ? void 0 : churchData.installmentsPaidCount) || 0;
+                        const previousTotalPaid = (churchData === null || churchData === void 0 ? void 0 : churchData.totalPaidInPeriod) || 0;
+                        const newPaidCount = previousPaidCount + 1;
+                        const newTotalPaid = previousTotalPaid + amountPaid;
+                        // Calculate next installment due date based on plan
+                        let nextInstallmentDue = null;
+                        if (currentPlan === 'quarterly') {
+                            const next = new Date(lastPaymentDate);
+                            next.setMonth(next.getMonth() + 3);
+                            nextInstallmentDue = toSafeISOString(next);
+                        }
+                        else if (currentPlan === 'biannual') {
+                            const next = new Date(lastPaymentDate);
+                            next.setMonth(next.getMonth() + 6);
+                            nextInstallmentDue = toSafeISOString(next);
+                        }
+                        // Check if this completes an annual cycle (all installments paid)
+                        const cycleComplete = newPaidCount >= currentInstallmentCount;
+                        // Calculate annual period next due date
+                        let nextDueDate;
+                        if (cycleComplete) {
+                            // Reset for next annual cycle
+                            const annualStart = (churchData === null || churchData === void 0 ? void 0 : churchData.annualPeriodStart) ? new Date(churchData.annualPeriodStart) : new Date(lastPaymentDate);
+                            annualStart.setFullYear(annualStart.getFullYear() + 1);
+                            nextDueDate = toSafeISOString(annualStart);
+                        }
+                        else {
+                            // Keep existing annual period end date
+                            nextDueDate = (churchData === null || churchData === void 0 ? void 0 : churchData.nextDueDate) || null;
+                            if (!nextDueDate) {
+                                const ndObj = new Date(lastPaymentDate);
+                                ndObj.setFullYear(ndObj.getFullYear() + 1);
+                                nextDueDate = toSafeISOString(ndObj);
+                            }
+                        }
+                        const updateData = {
                             lastPaymentDate,
+                            nextDueDate,
+                            totalPaidInPeriod: newTotalPaid,
+                            installmentsPaidCount: newPaidCount,
                             updatedAt: toSafeISOString(new Date())
-                        });
-                        console.log(`Updated church ${churchDoc.id} last payment date`);
+                        };
+                        if (nextInstallmentDue) {
+                            updateData.nextInstallmentDue = nextInstallmentDue;
+                        }
+                        // If cycle complete, reset for next year
+                        if (cycleComplete && newTotalPaid >= ((churchData === null || churchData === void 0 ? void 0 : churchData.paymentAmount) || 500)) {
+                            console.log(`[Installment] Annual cycle complete for ${churchData === null || churchData === void 0 ? void 0 : churchData.churchName}. Total paid: $${newTotalPaid}. Resetting for next year.`);
+                            updateData.totalPaidInPeriod = 0;
+                            updateData.installmentsPaidCount = 0;
+                            updateData.annualPeriodStart = toSafeISOString(new Date());
+                        }
+                        // If church was delinquent, reactivate on payment
+                        if ((churchData === null || churchData === void 0 ? void 0 : churchData.status) === 'DELINQUENT') {
+                            updateData.status = 'APPROVED';
+                            updateData.isManuallyDelinquent = false;
+                            console.log(`🎉 Reactivating delinquent church ${churchDoc.id} after successful payment`);
+                        }
+                        await churchDoc.ref.update(updateData);
+                        console.log(`[Installment] Updated church ${churchDoc.id} - Payment #${newPaidCount}/${currentInstallmentCount}, Total: $${newTotalPaid}/$${(churchData === null || churchData === void 0 ? void 0 : churchData.paymentAmount) || 500}`);
                         // Send payment notification email to finance@g3min.org
                         if (lastPaymentDate && churchData) {
-                            const amountPaid = invoice.amount_paid ? invoice.amount_paid / 100 : (churchData.paymentAmount || 0);
                             await sendPaymentNotification(churchData, lastPaymentDate, amountPaid);
                         }
+                    }
+                }
+                break;
+            }
+            case 'payment_intent.succeeded': {
+                const paymentIntent = event.data.object;
+                console.log(`Payment Intent succeeded: ${paymentIntent.id}`);
+                // Check if this is an annual dues payment (not a subscription payment, those are handled by invoice.payment_succeeded)
+                const churchId = (_f = paymentIntent.metadata) === null || _f === void 0 ? void 0 : _f.churchId;
+                const paymentType = (_g = paymentIntent.metadata) === null || _g === void 0 ? void 0 : _g.type;
+                if (churchId && (paymentType === 'annual_dues_onetime' || paymentType === 'annual_dues')) {
+                    const churchDoc = await db.collection('applications').doc(churchId).get();
+                    if (churchDoc.exists) {
+                        const churchData = churchDoc.data();
+                        const lastPaymentDate = toSafeISOString(new Date(paymentIntent.created * 1000));
+                        // Calculate next due date (1 year from payment date)
+                        const nextDueDateObj = new Date(lastPaymentDate);
+                        nextDueDateObj.setFullYear(nextDueDateObj.getFullYear() + 1);
+                        const nextDueDate = toSafeISOString(nextDueDateObj);
+                        await churchDoc.ref.update({
+                            lastPaymentDate,
+                            nextDueDate,
+                            updatedAt: toSafeISOString(new Date())
+                        });
+                        console.log(`✅ One-time payment processed for ${churchData === null || churchData === void 0 ? void 0 : churchData.churchName} (${churchId})`);
+                        console.log(`   Last Payment: ${lastPaymentDate}, Next Due: ${nextDueDate}`);
+                        // Send payment notification email to finance@g3min.org
+                        if (lastPaymentDate && churchData) {
+                            const amountPaid = paymentIntent.amount_received ? paymentIntent.amount_received / 100 : (churchData.paymentAmount || 0);
+                            await sendPaymentNotification(churchData, lastPaymentDate, amountPaid);
+                        }
+                    }
+                    else {
+                        console.error(`Church ${churchId} not found for payment intent ${paymentIntent.id}`);
                     }
                 }
                 break;

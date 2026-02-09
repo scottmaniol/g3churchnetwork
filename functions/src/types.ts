@@ -120,14 +120,22 @@ export interface ChurchApplication {
   connections: ChurchConnections;
 
   // Payment Info
-  paymentAmount?: number; // Minimum 500
-  paymentFrequency?: 'yearly' | 'one_time';
+  paymentAmount?: number; // Minimum 500 annual total
+  paymentFrequency?: 'yearly' | 'one_time'; // Legacy: auto-renew vs manual
+  paymentPlan?: 'annual' | 'biannual' | 'quarterly'; // Payment schedule
+  installmentAmount?: number; // Amount per installment
+  totalPaidInPeriod?: number; // Cumulative amount paid in current annual billing cycle
+  annualPeriodStart?: string; // Start date of current 1-year billing cycle
+  installmentsPaidCount?: number; // Number of installments paid so far this cycle
+  nextInstallmentDue?: string; // When the next installment payment is due
   stripeCustomerId?: string;
   stripePaymentMethodId?: string;
   stripeSubscriptionId?: string; // Added to track Stripe subscription ID
   lastPaymentDate?: string;
-  nextDueDate?: string;
+  nextDueDate?: string; // End of annual billing cycle
   promoCodeUsed?: string;
+  isManuallyDelinquent?: boolean;
+  duesExempt?: boolean;
 
   // Doctrinal Info
   pluralityOfElders: 'Yes' | 'No' | 'No, but working toward it.' | '';

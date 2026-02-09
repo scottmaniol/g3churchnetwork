@@ -1416,10 +1416,10 @@ export const clearTestStripeData = async () => {
  * Create a Stripe Checkout Session for initial payment setup
  * Redirects churches to Stripe to set up their first recurring payment
  */
-export const createStripeCheckoutSession = async (churchId: string, amount?: number) => {
+export const createStripeCheckoutSession = async (churchId: string, amount?: number, paymentPlan?: 'annual' | 'biannual' | 'quarterly') => {
   try {
     const fn = httpsCallable(functions, 'createStripeCheckoutSession');
-    const result = await fn({ churchId, amount });
+    const result = await fn({ churchId, amount, paymentPlan: paymentPlan || 'annual' });
     return result.data as { url: string; sessionId: string };
   } catch (error) {
     console.error("Error creating Stripe Checkout session:", error);

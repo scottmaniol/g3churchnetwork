@@ -443,6 +443,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       type: 'application_fully_approved',
       subject: 'Welcome to G3 Church Network - Full Access Granted!',
       body: '<p>Dear {{applicantName}},</p><p>We are excited to welcome <strong>{{churchName}}</strong> as a full member of the G3 Church Network!</p><p>Your payment has been processed and your church is now listed on our network map. You have full access to all member benefits.</p><p>Log in to your dashboard to explore: <a href="{{portalLink}}">Church Portal</a></p><p>Grace and peace,<br>G3 Church Network Team</p>'
+    },
+    installment_reminder_7: {
+      type: 'installment_reminder_7',
+      subject: 'G3 Network Dues - Installment Due in 7 Days',
+      body: '<p>Dear {{applicantName}},</p><p>This is a reminder that your next installment payment for <strong>{{churchName}}</strong> G3 Church Network dues is due in 7 days.</p><p>Please ensure your payment method is up to date.</p><p>Grace and peace,<br>G3 Church Network Team</p>'
+    },
+    installment_reminder_0: {
+      type: 'installment_reminder_0',
+      subject: 'G3 Network Dues - Installment Due Today',
+      body: '<p>Dear {{applicantName}},</p><p>Your installment payment for <strong>{{churchName}}</strong> G3 Church Network dues is due today.</p><p>Grace and peace,<br>G3 Church Network Team</p>'
+    },
+    installment_delinquent: {
+      type: 'installment_delinquent',
+      subject: 'Action Required: G3 Network Installment Payment Overdue',
+      body: '<p>Dear {{applicantName}},</p><p>Your installment payment for <strong>{{churchName}}</strong> is overdue. Please update your payment method to avoid interruption to your membership.</p><p>Grace and peace,<br>G3 Church Network Team</p>'
+    },
+    installment_payment_received: {
+      type: 'installment_payment_received',
+      subject: 'G3 Network Dues - Installment Payment Received',
+      body: '<p>Dear {{applicantName}},</p><p>We have received your installment payment for <strong>{{churchName}}</strong>. Thank you for keeping your membership current!</p><p>Grace and peace,<br>G3 Church Network Team</p>'
     }
   });
   const [loadingTemplates, setLoadingTemplates] = useState(false);
@@ -768,7 +788,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
     // Network Dues Section
     { id: 'paymentAmount', name: 'paymentAmount', label: 'Annual Contribution Amount ($)', type: 'number', required: true, section: 'Network Dues', order: 50, min: 500, placeholder: '500', description: 'Minimum: $500' },
-    { id: 'paymentFrequency', name: 'paymentFrequency', label: 'Payment Frequency', type: 'radio', required: true, section: 'Network Dues', order: 51, options: ['yearly', 'one_time'] },
+    { id: 'paymentPlan', name: 'paymentPlan', label: 'Payment Plan', type: 'radio', required: false, section: 'Network Dues', order: 51, options: ['annual', 'biannual', 'quarterly'] },
+    { id: 'paymentFrequency', name: 'paymentFrequency', label: 'Auto-Renew', type: 'radio', required: true, section: 'Network Dues', order: 52, options: ['yearly', 'one_time'] },
   ]);
 
   const [editingField, setEditingField] = useState<FormField | null>(null);

@@ -120,13 +120,19 @@ export interface ChurchApplication {
   connections: ChurchConnections;
 
   // Payment Info
-  paymentAmount?: number; // Minimum 500
-  paymentFrequency?: 'yearly' | 'one_time';
+  paymentAmount?: number; // Minimum 500 annual total
+  paymentFrequency?: 'yearly' | 'one_time'; // Legacy: auto-renew vs manual
+  paymentPlan?: 'annual' | 'biannual' | 'quarterly'; // Payment schedule: annual ($500+), bi-annual ($250+/6mo), quarterly ($125+/3mo)
+  installmentAmount?: number; // Amount per installment (paymentAmount / number of installments)
+  totalPaidInPeriod?: number; // Cumulative amount paid in current annual billing cycle
+  annualPeriodStart?: string; // Start date of current 1-year billing cycle (ISO string)
+  installmentsPaidCount?: number; // Number of installments paid so far this cycle
+  nextInstallmentDue?: string; // When the next installment payment is due (ISO string)
   stripeCustomerId?: string;
   stripePaymentMethodId?: string;
   stripeSubscriptionId?: string; // Added to track Stripe subscription ID
   lastPaymentDate?: string;
-  nextDueDate?: string;
+  nextDueDate?: string; // End of annual billing cycle
   promoCodeUsed?: string;
   isManuallyDelinquent?: boolean; // Admin can manually mark as delinquent
   duesExempt?: boolean; // Admin can mark church as exempt from dues - always active, no delinquency checks
@@ -154,7 +160,7 @@ export interface Coordinates {
   lng: number;
 }
 
-export type EmailType = 'application_received' | 'admin_application_notification' | 'application_provisional_approved' | 'application_approved' | 'application_fully_approved' | 'application_rejected' | 'dues_reminder_30' | 'dues_reminder_7' | 'dues_reminder_0' | 'dues_delinquent' | 'portal_account_setup';
+export type EmailType = 'application_received' | 'admin_application_notification' | 'application_provisional_approved' | 'application_approved' | 'application_fully_approved' | 'application_rejected' | 'dues_reminder_30' | 'dues_reminder_7' | 'dues_reminder_0' | 'dues_delinquent' | 'portal_account_setup' | 'installment_reminder_7' | 'installment_reminder_0' | 'installment_delinquent' | 'installment_payment_received';
 
 export interface EmailTemplate {
   subject: string;

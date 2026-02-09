@@ -25,6 +25,7 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
   const [paymentAmount, setPaymentAmount] = useState<number>(500);
   const [processingPayment, setProcessingPayment] = useState(false);
   const [paymentFrequency, setPaymentFrequency] = useState<'yearly' | 'one_time'>('yearly');
+  const [paymentPlan, setPaymentPlan] = useState<'annual' | 'biannual' | 'quarterly'>('annual');
 
   // Editable state
   const [editedChurch, setEditedChurch] = useState<ChurchApplication | null>(null);
@@ -217,18 +218,51 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
     }
   };
 
+  // Helper to calculate installment amount
+  const getInstallmentAmount = (total: number, plan: 'annual' | 'biannual' | 'quarterly') => {
+    switch (plan) {
+      case 'quarterly': return Math.ceil(total / 4);
+      case 'biannual': return Math.ceil(total / 2);
+      default: return total;
+    }
+  };
+
+  const getPlanLabel = (plan: 'annual' | 'biannual' | 'quarterly') => {
+    switch (plan) {
+      case 'quarterly': return 'Quarterly';
+      case 'biannual': return 'Bi-Annual';
+      default: return 'Annual';
+    }
+  };
+
+  const getPlanInterval = (plan: 'annual' | 'biannual' | 'quarterly') => {
+    switch (plan) {
+      case 'quarterly': return 'every 3 months';
+      case 'biannual': return 'every 6 months';
+      default: return 'once per year';
+    }
+  };
+
+  const getInstallmentCount = (plan: 'annual' | 'biannual' | 'quarterly') => {
+    switch (plan) {
+      case 'quarterly': return 4;
+      case 'biannual': return 2;
+      default: return 1;
+    }
+  };
+
   const handlePayDues = async () => {
     if (!church) return;
 
     // Validate amount
     if (paymentAmount < 500) {
-      alert('Minimum payment amount is $500');
+      alert('Minimum annual amount is $500');
       return;
     }
 
     setProcessingPayment(true);
     try {
-      const { url } = await createStripeCheckoutSession(church.id, paymentAmount);
+      const { url } = await createStripeCheckoutSession(church.id, paymentAmount, paymentPlan);
       // Redirect to Stripe Checkout
       window.location.href = url;
     } catch (error) {
@@ -394,37 +428,71 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-3">
-                        Payment Frequency *
+                        Payment Schedule *
                       </label>
                       <div className="space-y-3">
-                        <label className="flex items-start p-4 border-2 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors border-gray-300">
+                        <label className={`flex items-start p-4 border-2 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors ${paymentPlan === 'annual' ? 'border-orange-500 bg-orange-50' : 'border-gray-300'}`}>
                           <input
                             type="radio"
-                            name="paymentFrequency"
-                            value="yearly"
-                            checked={paymentFrequency === 'yearly'}
-                            onChange={() => setPaymentFrequency('yearly')}
+                            name="paymentPlan"
+                            value="annual"
+                            checked={paymentPlan === 'annual'}
+                            onChange={() => setPaymentPlan('annual')}
                             className="mt-1 text-orange-600 focus:ring-orange-500"
                           />
-                          <div className="ml-3">
-                            <div className="font-semibold text-gray-900">Recurring (Auto-Renew)</div>
-                            <div className="text-sm text-gray-600">Automatically renews each year</div>
+                          <div className="ml-3 flex-1">
+                            <div className="flex justify-between items-center">
+                              <div className="font-semibold text-gray-900">Annual (Pay Once)</div>
+                              <div className="font-bold text-orange-700">${paymentAmount}/year</div>
+                            </div>
+                            <div className="text-sm text-gray-600">One payment per year, auto-renews annually</div>
                           </div>
                         </label>
-                        <label className="flex items-start p-4 border-2 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors border-gray-300">
+                        <label className={`flex items-start p-4 border-2 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors ${paymentPlan === 'biannual' ? 'border-orange-500 bg-orange-50' : 'border-gray-300'}`}>
                           <input
                             type="radio"
-                            name="paymentFrequency"
-                            value="one_time"
-                            checked={paymentFrequency === 'one_time'}
-                            onChange={() => setPaymentFrequency('one_time')}
+                            name="paymentPlan"
+                            value="biannual"
+                            checked={paymentPlan === 'biannual'}
+                            onChange={() => setPaymentPlan('biannual')}
                             className="mt-1 text-orange-600 focus:ring-orange-500"
                           />
-                          <div className="ml-3">
-                            <div className="font-semibold text-gray-900">One-Time Payment</div>
-                            <div className="text-sm text-gray-600">Manual renewal required each year</div>
+                          <div className="ml-3 flex-1">
+                            <div className="flex justify-between items-center">
+                              <div className="font-semibold text-gray-900">Bi-Annual (2 Payments)</div>
+                              <div className="font-bold text-orange-700">${getInstallmentAmount(paymentAmount, 'biannual')}/6 months</div>
+                            </div>
+                            <div className="text-sm text-gray-600">Pay every 6 months, auto-renews</div>
                           </div>
                         </label>
+                        <label className={`flex items-start p-4 border-2 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors ${paymentPlan === 'quarterly' ? 'border-orange-500 bg-orange-50' : 'border-gray-300'}`}>
+                          <input
+                            type="radio"
+                            name="paymentPlan"
+                            value="quarterly"
+                            checked={paymentPlan === 'quarterly'}
+                            onChange={() => setPaymentPlan('quarterly')}
+                            className="mt-1 text-orange-600 focus:ring-orange-500"
+                          />
+                          <div className="ml-3 flex-1">
+                            <div className="flex justify-between items-center">
+                              <div className="font-semibold text-gray-900">Quarterly (4 Payments)</div>
+                              <div className="font-bold text-orange-700">${getInstallmentAmount(paymentAmount, 'quarterly')}/quarter</div>
+                            </div>
+                            <div className="text-sm text-gray-600">Pay every 3 months, auto-renews</div>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-600">Annual Total:</span>
+                        <span className="font-bold text-gray-900">${paymentAmount}/year</span>
+                      </div>
+                      <div className="flex justify-between text-sm mt-1">
+                        <span className="text-gray-600">Payment Schedule:</span>
+                        <span className="font-medium text-gray-900">{getPlanLabel(paymentPlan)} — ${getInstallmentAmount(paymentAmount, paymentPlan)} {getPlanInterval(paymentPlan)}</span>
                       </div>
                     </div>
 
@@ -434,7 +502,10 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
                       className="w-full bg-orange-600 hover:bg-orange-700 text-white py-4 text-lg font-semibold"
                     >
                       <CreditCard className="w-5 h-5 mr-2" />
-                      Complete Payment - ${paymentAmount}/year
+                      {paymentPlan === 'annual'
+                        ? `Complete Payment - $${paymentAmount}/year`
+                        : `Start ${getPlanLabel(paymentPlan)} Plan - $${getInstallmentAmount(paymentAmount, paymentPlan)} ${getPlanInterval(paymentPlan)}`
+                      }
                     </Button>
 
                     <p className="text-xs text-gray-500 text-center">
@@ -692,8 +763,12 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
                         <div>
                           <span className="text-sm font-medium text-gray-500 block">Payment Plan</span>
                           <div className="text-lg font-medium">
-                            ${church.paymentAmount || 500} / {church.paymentFrequency === 'one_time' ? 'Year' : 'Year (Auto-Renew)'}
+                            {church.paymentPlan && church.paymentPlan !== 'annual'
+                              ? `$${church.installmentAmount || getInstallmentAmount(church.paymentAmount || 500, church.paymentPlan)} / ${getPlanInterval(church.paymentPlan)} (${getPlanLabel(church.paymentPlan)})`
+                              : `$${church.paymentAmount || 500} / ${church.paymentFrequency === 'one_time' ? 'Year' : 'Year (Auto-Renew)'}`
+                            }
                           </div>
+                          <div className="text-xs text-gray-500">Annual total: ${church.paymentAmount || 500}</div>
                         </div>
 
                         <div>
@@ -725,14 +800,44 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
                         </div>
 
                         <div>
-                          <span className="text-sm font-medium text-gray-500 block">Next Due Date</span>
-                          <div className={`text-lg font-bold ${new Date(church.nextDueDate || '') < new Date() ? 'text-red-600' : 'text-gray-900'
-                            }`}>
-                            {church.nextDueDate ? new Date(church.nextDueDate).toLocaleDateString() : 'N/A'}
+                          <span className="text-sm font-medium text-gray-500 block">
+                            {church.paymentPlan && church.paymentPlan !== 'annual' ? 'Next Installment Due' : 'Next Due Date'}
+                          </span>
+                          <div className={`text-lg font-bold ${new Date(church.nextInstallmentDue || church.nextDueDate || '') < new Date() ? 'text-red-600' : 'text-gray-900'}`}>
+                            {(church.nextInstallmentDue || church.nextDueDate) 
+                              ? new Date(church.nextInstallmentDue || church.nextDueDate || '').toLocaleDateString() 
+                              : 'N/A'}
                           </div>
                         </div>
                       </div>
                     </div>
+
+                    {/* Installment Progress Tracker */}
+                    {church.paymentPlan && church.paymentPlan !== 'annual' && (
+                      <div className="mt-6 bg-gray-50 border border-gray-200 rounded-lg p-4">
+                        <h4 className="text-sm font-semibold text-gray-700 mb-3">Installment Progress</h4>
+                        <div className="flex items-center justify-between text-sm mb-2">
+                          <span className="text-gray-600">
+                            {church.installmentsPaidCount || 0} of {getInstallmentCount(church.paymentPlan)} payments made
+                          </span>
+                          <span className="font-bold text-gray-900">
+                            ${church.totalPaidInPeriod || 0} of ${church.paymentAmount || 500}
+                          </span>
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-3">
+                          <div 
+                            className="bg-green-500 h-3 rounded-full transition-all duration-500"
+                            style={{ width: `${Math.min(100, ((church.totalPaidInPeriod || 0) / (church.paymentAmount || 500)) * 100)}%` }}
+                          ></div>
+                        </div>
+                        {church.annualPeriodStart && (
+                          <div className="flex justify-between text-xs text-gray-500 mt-2">
+                            <span>Billing cycle started: {new Date(church.annualPeriodStart).toLocaleDateString()}</span>
+                            <span>Renews: {church.nextDueDate ? new Date(church.nextDueDate).toLocaleDateString() : 'N/A'}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Actions */}
                     <div className="mt-8 pt-6 border-t">
@@ -741,40 +846,112 @@ export const ChurchDashboard: React.FC<ChurchDashboardProps> = ({ userId, onBack
                         <div className="space-y-4">
                           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                             <p className="text-sm text-blue-900 font-medium mb-2">
-                              Set Up Your Annual Dues Payment
+                              Set Up Your Dues Payment
                             </p>
                             <p className="text-xs text-blue-700">
-                              Minimum $500/year. You can contribute more if you'd like to support the network.
+                              Minimum $500/year. You can contribute more if you'd like to support the network. Choose a payment schedule that works for your church.
                             </p>
                           </div>
 
-                          <div className="flex flex-col sm:flex-row gap-4 items-end">
-                            <div className="flex-1">
-                              <label className="block text-sm font-medium text-gray-700 mb-2">
-                                Annual Amount (USD)
-                              </label>
-                              <div className="relative">
-                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">$</span>
-                                <input
-                                  type="number"
-                                  min="500"
-                                  step="50"
-                                  value={paymentAmount}
-                                  onChange={(e) => setPaymentAmount(Math.max(500, parseInt(e.target.value) || 500))}
-                                  className="w-full pl-8 rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
-                                />
-                              </div>
-                              <p className="text-xs text-gray-500 mt-1">Minimum: $500</p>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              Annual Amount (USD)
+                            </label>
+                            <div className="relative max-w-xs">
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">$</span>
+                              <input
+                                type="number"
+                                min="500"
+                                step="50"
+                                value={paymentAmount}
+                                onChange={(e) => setPaymentAmount(Math.max(500, parseInt(e.target.value) || 500))}
+                                className="w-full pl-8 rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black border p-2"
+                              />
                             </div>
-                            <Button
-                              onClick={handlePayDues}
-                              isLoading={processingPayment}
-                              className="bg-green-600 hover:bg-green-700 whitespace-nowrap"
-                            >
-                              <CreditCard className="w-4 h-4 mr-2" />
-                              Pay Dues (${paymentAmount}/year)
-                            </Button>
+                            <p className="text-xs text-gray-500 mt-1">Minimum: $500</p>
                           </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-3">
+                              Payment Schedule
+                            </label>
+                            <div className="space-y-3">
+                              <label className={`flex items-start p-4 border-2 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors ${paymentPlan === 'annual' ? 'border-green-500 bg-green-50' : 'border-gray-300'}`}>
+                                <input
+                                  type="radio"
+                                  name="duesPaymentPlan"
+                                  value="annual"
+                                  checked={paymentPlan === 'annual'}
+                                  onChange={() => setPaymentPlan('annual')}
+                                  className="mt-1 text-green-600 focus:ring-green-500"
+                                />
+                                <div className="ml-3 flex-1">
+                                  <div className="flex justify-between items-center">
+                                    <div className="font-semibold text-gray-900">Annual (Pay Once)</div>
+                                    <div className="font-bold text-green-700">${paymentAmount}/year</div>
+                                  </div>
+                                  <div className="text-sm text-gray-600">One payment per year, auto-renews annually</div>
+                                </div>
+                              </label>
+                              <label className={`flex items-start p-4 border-2 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors ${paymentPlan === 'biannual' ? 'border-green-500 bg-green-50' : 'border-gray-300'}`}>
+                                <input
+                                  type="radio"
+                                  name="duesPaymentPlan"
+                                  value="biannual"
+                                  checked={paymentPlan === 'biannual'}
+                                  onChange={() => setPaymentPlan('biannual')}
+                                  className="mt-1 text-green-600 focus:ring-green-500"
+                                />
+                                <div className="ml-3 flex-1">
+                                  <div className="flex justify-between items-center">
+                                    <div className="font-semibold text-gray-900">Bi-Annual (2 Payments)</div>
+                                    <div className="font-bold text-green-700">${getInstallmentAmount(paymentAmount, 'biannual')}/6 months</div>
+                                  </div>
+                                  <div className="text-sm text-gray-600">Pay every 6 months, auto-renews</div>
+                                </div>
+                              </label>
+                              <label className={`flex items-start p-4 border-2 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors ${paymentPlan === 'quarterly' ? 'border-green-500 bg-green-50' : 'border-gray-300'}`}>
+                                <input
+                                  type="radio"
+                                  name="duesPaymentPlan"
+                                  value="quarterly"
+                                  checked={paymentPlan === 'quarterly'}
+                                  onChange={() => setPaymentPlan('quarterly')}
+                                  className="mt-1 text-green-600 focus:ring-green-500"
+                                />
+                                <div className="ml-3 flex-1">
+                                  <div className="flex justify-between items-center">
+                                    <div className="font-semibold text-gray-900">Quarterly (4 Payments)</div>
+                                    <div className="font-bold text-green-700">${getInstallmentAmount(paymentAmount, 'quarterly')}/quarter</div>
+                                  </div>
+                                  <div className="text-sm text-gray-600">Pay every 3 months, auto-renews</div>
+                                </div>
+                              </label>
+                            </div>
+                          </div>
+
+                          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-600">Annual Total:</span>
+                              <span className="font-bold text-gray-900">${paymentAmount}/year</span>
+                            </div>
+                            <div className="flex justify-between text-sm mt-1">
+                              <span className="text-gray-600">Payment Schedule:</span>
+                              <span className="font-medium text-gray-900">{getPlanLabel(paymentPlan)} — ${getInstallmentAmount(paymentAmount, paymentPlan)} {getPlanInterval(paymentPlan)}</span>
+                            </div>
+                          </div>
+
+                          <Button
+                            onClick={handlePayDues}
+                            isLoading={processingPayment}
+                            className="w-full bg-green-600 hover:bg-green-700 text-white py-4 text-lg font-semibold"
+                          >
+                            <CreditCard className="w-5 h-5 mr-2" />
+                            {paymentPlan === 'annual'
+                              ? `Pay Dues - $${paymentAmount}/year`
+                              : `Start ${getPlanLabel(paymentPlan)} Plan - $${getInstallmentAmount(paymentAmount, paymentPlan)} ${getPlanInterval(paymentPlan)}`
+                            }
+                          </Button>
                         </div>
                       ) : (
                         /* Show existing buttons for churches with payment methods */
