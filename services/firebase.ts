@@ -311,7 +311,17 @@ export const subscribeToPublicApplications = (callback: (apps: ChurchApplication
       }
       return { ...church, jobListings: jobListings.filter(job => job.status === 'active') };
     }));
-    callback(churchesWithJobs);
+    // Filter out effectively-delinquent churches (overdue but not yet marked DELINQUENT by scheduled function)
+    const visibleChurches = churchesWithJobs.filter(church => {
+      if (church.duesExempt) return true;
+      if (church.isManuallyDelinquent) return false;
+      if (!church.stripeSubscriptionId && church.nextDueDate) {
+        const dueDate = new Date(church.nextDueDate);
+        if (dueDate < new Date()) return false;
+      }
+      return true;
+    });
+    callback(visibleChurches);
   }, (error) => {
     console.error("Error in public subscription:", error);
   });
@@ -946,6 +956,27 @@ export const createChurchUserAndSendResetEmailClient = async (churchId: string, 
     console.error("Error calling createChurchUserAndSendResetEmail function:", error);
     throw error;
   }
+};
+
+/**
+ * Validate a password setup token. Used by the /setup-password page
+ * to confirm the token is real and unused before showing the form.
+ */
+export const getSetupTokenInfo = async (token: string): Promise<{ email: string; churchName: string | null }> => {
+  const fn = httpsCallable(functions, 'getSetupTokenInfo');
+  const result = await fn({ token });
+  const data = result.data as { success: boolean; email: string; churchName: string | null };
+  return { email: data.email, churchName: data.churchName };
+};
+
+/**
+ * Consume a password setup token by setting the user's password.
+ */
+export const setupAccountPassword = async (token: string, newPassword: string): Promise<{ email: string; loginUrl: string }> => {
+  const fn = httpsCallable(functions, 'setupAccountPassword');
+  const result = await fn({ token, newPassword });
+  const data = result.data as { success: boolean; email: string; loginUrl: string };
+  return { email: data.email, loginUrl: data.loginUrl };
 };
 
 /**

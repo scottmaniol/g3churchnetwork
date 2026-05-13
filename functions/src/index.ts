@@ -8,6 +8,7 @@ import { Resend } from "resend";
 import Stripe from "stripe";
 import * as dotenv from "dotenv";
 import axios from "axios";
+import * as crypto from "crypto";
 import { ChurchApplication } from './types'; // Import ChurchApplication
 import { shopifyApi, Session, ApiVersion } from '@shopify/shopify-api';
 import '@shopify/shopify-api/adapters/node';
@@ -81,10 +82,63 @@ const DATABASE_ID = 'g3network';
 const db = getFirestore(admin.app(), DATABASE_ID);
 
 const CHURCH_LOGIN_URL = 'https://network.g3min.org/login';
+const PASSWORD_SETUP_BASE_URL = 'https://network.g3min.org/setup-password';
+const SETUP_TOKENS_COLLECTION = 'passwordSetupTokens';
 
 // ------------------------------------------------------------------
 // HELPERS
 // ------------------------------------------------------------------
+
+/**
+ * Creates a long-lived password setup token, stores it in Firestore,
+ * and returns the full setup URL the user should click. Each call
+ * invalidates any previously-issued unused tokens for the same email
+ * so a freshly-resent welcome email always supersedes older ones.
+ *
+ * Tokens are single-use and do not expire by time — they remain valid
+ * until consumed (or manually revoked). This avoids the situation where
+ * Firebase's built-in password reset links expire before a busy church
+ * gets to them.
+ */
+const createPasswordSetupLink = async (
+  email: string,
+  userId: string,
+  applicationId?: string
+): Promise<string> => {
+  // Invalidate any prior unused tokens for this email so only the newest works.
+  try {
+    const stale = await db.collection(SETUP_TOKENS_COLLECTION)
+      .where('email', '==', email)
+      .where('used', '==', false)
+      .get();
+    const batch = db.batch();
+    stale.forEach(doc => {
+      batch.update(doc.ref, {
+        used: true,
+        usedAt: new Date().toISOString(),
+        revokedReason: 'superseded_by_new_token',
+      });
+    });
+    if (!stale.empty) {
+      await batch.commit();
+    }
+  } catch (err) {
+    console.warn(`Could not revoke prior setup tokens for ${email}:`, err);
+  }
+
+  const token = crypto.randomBytes(32).toString('hex');
+  await db.collection(SETUP_TOKENS_COLLECTION).doc(token).set({
+    token,
+    email,
+    userId,
+    applicationId: applicationId || null,
+    createdAt: new Date().toISOString(),
+    used: false,
+    usedAt: null,
+  });
+
+  return `${PASSWORD_SETUP_BASE_URL}?token=${token}`;
+};
 
 interface EmailTemplate {
   subject: string;
@@ -106,7 +160,7 @@ const DEFAULT_TEMPLATES: Record<string, EmailTemplate> = {
   application_provisional_approved: {
     type: 'application_provisional_approved',
     subject: 'Next Steps for Your G3 Church Network Membership',
-    body: '<p>Dear {{applicantName}},</p><p>Congratulations! We are pleased to inform you that your application for <strong>{{churchName}}</strong> has been <strong>provisionally approved</strong> to join the G3 Church Network.</p><p><strong>Next Steps:</strong></p><ol><li>Set up your church portal account password using the link below</li><li>Log in to your church portal</li><li>Complete your payment ($500 minimum annual dues)</li><li>Once payment is received, your membership will be fully activated</li></ol><p><strong>Set Your Password:</strong><br><a href="{{resetLink}}">Click here to set your password and access the Church Portal</a></p><p>This link is valid for 72 hours. After setting your password, you can log in at: <a href="' + CHURCH_LOGIN_URL + '">Church Portal Login</a></p><p><strong>Payment Information:</strong><br>Once logged in, you will have the option to complete your annual dues payment. The minimum annual contribution is $500, and you can choose between a yearly subscription or a one-time payment.</p><p>After your payment is processed, you will gain full access to all network benefits and your church will be added to our public map.</p><p>If you have any questions, please don\'t hesitate to reply to this email.</p><p>Grace and peace,<br>G3 Church Network Team</p>'
+    body: '<p>Dear {{applicantName}},</p><p>Congratulations! We are pleased to inform you that your application for <strong>{{churchName}}</strong> has been <strong>provisionally approved</strong> to join the G3 Church Network.</p><p><strong>Next Steps:</strong></p><ol><li>Set up your church portal account password using the link below</li><li>Log in to your church portal</li><li>Complete your payment ($500 minimum annual dues)</li><li>Once payment is received, your membership will be fully activated</li></ol><p><strong>Set Your Password:</strong><br><a href="{{resetLink}}">Click here to set your password and access the Church Portal</a></p><p>This link will remain active until you use it. After setting your password, you can log in at: <a href="' + CHURCH_LOGIN_URL + '">Church Portal Login</a></p><p><strong>Payment Information:</strong><br>Once logged in, you will have the option to complete your annual dues payment. The minimum annual contribution is $500, and you can choose between a yearly subscription or a one-time payment.</p><p>After your payment is processed, you will gain full access to all network benefits and your church will be added to our public map.</p><p>If you have any questions, please don\'t hesitate to reply to this email.</p><p>Grace and peace,<br>G3 Church Network Team</p>'
   },
   application_approved: {
     type: 'application_approved',
@@ -146,7 +200,7 @@ const DEFAULT_TEMPLATES: Record<string, EmailTemplate> = {
   portal_account_setup: {
     type: 'portal_account_setup',
     subject: 'Set Up Your G3 Church Network Portal Account',
-    body: '<p>Dear {{applicantName}},</p><p>A portal account has been created for <strong>{{churchName}}</strong> in the G3 Church Network.</p><p>To set your password and access your church\'s profile, please click the link below:</p><p><a href="{{resetLink}}">Set Your Password for the Church Portal</a></p><p>This link is valid for a limited time. If you do not set your password within 24 hours, you may use the "Forgot Password" link on the login page.</p><p>You can log in here: <a href="' + CHURCH_LOGIN_URL + '">Church Portal Login</a></p><p>Grace and peace,<br>G3 Church Network Team</p>'
+    body: '<p>Dear {{applicantName}},</p><p>A portal account has been created for <strong>{{churchName}}</strong> in the G3 Church Network.</p><p>To set your password and access your church\'s profile, please click the link below:</p><p><a href="{{resetLink}}">Set Your Password for the Church Portal</a></p><p>This link will remain active until you use it. If you ever need to reset your password again later, you can use the "Forgot Password" link on the login page.</p><p>You can log in here: <a href="' + CHURCH_LOGIN_URL + '">Church Portal Login</a></p><p>Grace and peace,<br>G3 Church Network Team</p>'
   },
   job_application_received: {
     type: 'job_application_received',
@@ -205,6 +259,8 @@ const replaceVariables = (text: string, application: any) => {
   if (application.resetLink) {
     result = result.replace(/\{\{resetLink\}\}/g, application.resetLink);
   }
+  // Handle {{portalLink}} — maps to resetLink if available, otherwise login URL
+  result = result.replace(/\{\{portalLink\}\}/g, application.resetLink || CHURCH_LOGIN_URL);
   return result;
 };
 
@@ -552,11 +608,9 @@ export const createChurchUserAndSendResetEmail = onCall({ cors: true }, async (r
       console.log(`Updated Firestore application ${churchId} with userId: ${firebaseUser.uid}`);
     }
 
-    // Generate password reset link with continue URL to redirect to church portal login
-    const link = await authAdmin.generatePasswordResetLink(applicantEmail, {
-      url: CHURCH_LOGIN_URL
-    });
-    console.log(`Generated password reset link for ${applicantEmail} with continue URL: ${link}`);
+    // Generate a long-lived setup link (does not expire by time, single-use)
+    const link = await createPasswordSetupLink(applicantEmail, firebaseUser.uid, churchId);
+    console.log(`Generated password setup link for ${applicantEmail}: ${link}`);
 
     // Send the password setup email
     const template = await getTemplate('portal_account_setup');
@@ -792,11 +846,9 @@ export const provisionallyApproveApplication = onCall({ cors: true }, async (req
     });
     console.log(`Updated application ${applicationId} to PROVISIONAL_APPROVED with userId: ${firebaseUser.uid}`);
 
-    // 4. Generate password reset link
-    const resetLink = await authAdmin.generatePasswordResetLink(applicantEmail, {
-      url: CHURCH_LOGIN_URL
-    });
-    console.log(`Generated password reset link for ${applicantEmail}`);
+    // 4. Generate a long-lived password setup link (does not expire by time, single-use)
+    const resetLink = await createPasswordSetupLink(applicantEmail, firebaseUser.uid, applicationId);
+    console.log(`Generated password setup link for ${applicantEmail}`);
 
     // 5. Send provisional approval email with portal access instructions
     const template = await getTemplate('application_provisional_approved');
@@ -1312,7 +1364,37 @@ export const resendSystemEmailV2 = onCall({ cors: true }, async (request) => {
 
     const template = await getTemplate(type);
     const subject = replaceVariables(template.subject, application);
-    const body = replaceVariables(template.body, application);
+
+    // For emails that need a password setup link, generate a fresh long-lived one.
+    // (Issuing a new token automatically invalidates any prior unused tokens for this email.)
+    let templateData = { ...application };
+    if (type === 'application_provisional_approved' || type === 'portal_account_setup') {
+      const authAdmin = getAuth(admin.app());
+      let userId = application.userId;
+      if (!userId) {
+        try {
+          const u = await authAdmin.getUserByEmail(application.applicantEmail);
+          userId = u.uid;
+        } catch (err: any) {
+          if (err.code === 'auth/user-not-found') {
+            const created = await authAdmin.createUser({
+              email: application.applicantEmail,
+              emailVerified: false,
+              disabled: false,
+            });
+            userId = created.uid;
+            await db.collection('applications').doc(churchId).update({ userId });
+          } else {
+            throw err;
+          }
+        }
+      }
+      const resetLink = await createPasswordSetupLink(application.applicantEmail, userId, churchId);
+      console.log(`Generated fresh password setup link for resend to ${application.applicantEmail}`);
+      templateData.resetLink = resetLink;
+    }
+
+    const body = replaceVariables(template.body, templateData);
 
     console.log(`Attempting to resend ${type} email to ${application.applicantEmail} from ${SYSTEM_SENDER}`);
     return await sendEmailBatch([application.applicantEmail], subject, body, SYSTEM_SENDER);
@@ -2062,6 +2144,95 @@ export const sendPasswordResetEmail = onCall({ cors: true }, async (request) => 
     console.error("Error sending password reset email:", error);
     throw new HttpsError("internal", "Failed to send password reset email: " + error.message);
   }
+});
+
+/**
+ * Validate a password setup token and return basic info so the
+ * /setup-password page can confirm to the church which account
+ * they're about to set a password for. Public (no auth) — the token
+ * itself is the bearer credential.
+ */
+export const getSetupTokenInfo = onCall({ cors: true }, async (request) => {
+  const { token } = request.data || {};
+  if (!token || typeof token !== 'string') {
+    throw new HttpsError("invalid-argument", "Token is required.");
+  }
+
+  const docRef = db.collection(SETUP_TOKENS_COLLECTION).doc(token);
+  const docSnap = await docRef.get();
+  if (!docSnap.exists) {
+    throw new HttpsError("not-found", "This setup link is invalid. Please request a new one.");
+  }
+  const data = docSnap.data() as any;
+  if (data.used) {
+    throw new HttpsError("failed-precondition", "This setup link has already been used. If you need to reset your password, use the Forgot Password link on the login page.");
+  }
+
+  let churchName: string | null = null;
+  if (data.applicationId) {
+    try {
+      const appDoc = await db.collection('applications').doc(data.applicationId).get();
+      if (appDoc.exists) {
+        churchName = (appDoc.data() as any)?.churchName || null;
+      }
+    } catch (err) {
+      // Non-fatal — the page can still proceed without the church name
+      console.warn(`Could not load application ${data.applicationId} for token info:`, err);
+    }
+  }
+
+  return {
+    success: true,
+    email: data.email,
+    churchName,
+  };
+});
+
+/**
+ * Consume a password setup token: set the user's password via the
+ * Admin SDK and mark the token as used. Public (no auth) — the token
+ * itself is the bearer credential.
+ */
+export const setupAccountPassword = onCall({ cors: true }, async (request) => {
+  const { token, newPassword } = request.data || {};
+  if (!token || typeof token !== 'string') {
+    throw new HttpsError("invalid-argument", "Token is required.");
+  }
+  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+    throw new HttpsError("invalid-argument", "Password must be at least 8 characters.");
+  }
+
+  const docRef = db.collection(SETUP_TOKENS_COLLECTION).doc(token);
+  const docSnap = await docRef.get();
+  if (!docSnap.exists) {
+    throw new HttpsError("not-found", "This setup link is invalid. Please request a new one.");
+  }
+  const data = docSnap.data() as any;
+  if (data.used) {
+    throw new HttpsError("failed-precondition", "This setup link has already been used.");
+  }
+
+  try {
+    await getAuth(admin.app()).updateUser(data.userId, {
+      password: newPassword,
+      emailVerified: true,
+    });
+  } catch (err: any) {
+    console.error(`Failed to set password for user ${data.userId}:`, err);
+    throw new HttpsError("internal", "Failed to set password: " + (err.message || err));
+  }
+
+  await docRef.update({
+    used: true,
+    usedAt: new Date().toISOString(),
+  });
+
+  console.log(`Password setup completed for ${data.email} (uid=${data.userId})`);
+  return {
+    success: true,
+    email: data.email,
+    loginUrl: CHURCH_LOGIN_URL,
+  };
 });
 
 export const backfillGeocodes = onCall({ cors: true, timeoutSeconds: 300 }, async (request) => {
@@ -3046,11 +3217,20 @@ export const handleStripeWebhook = onRequest(async (req, res) => {
             nextDueDateObj.setFullYear(nextDueDateObj.getFullYear() + 1);
             const nextDueDate = toSafeISOString(nextDueDateObj);
 
-            await churchDoc.ref.update({
+            const updateData: any = {
               lastPaymentDate,
               nextDueDate,
               updatedAt: toSafeISOString(new Date())
-            });
+            };
+
+            // If church was delinquent, reactivate on payment (matches subscription + installment handlers)
+            if (churchData?.status === 'DELINQUENT') {
+              updateData.status = 'APPROVED';
+              updateData.isManuallyDelinquent = false;
+              console.log(`🎉 Reactivating delinquent church ${churchId} (${churchData?.churchName}) after one-time payment`);
+            }
+
+            await churchDoc.ref.update(updateData);
 
             console.log(`✅ One-time payment processed for ${churchData?.churchName} (${churchId})`);
             console.log(`   Last Payment: ${lastPaymentDate}, Next Due: ${nextDueDate}`);

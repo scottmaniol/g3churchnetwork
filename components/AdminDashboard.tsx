@@ -437,12 +437,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     application_provisional_approved: {
       type: 'application_provisional_approved',
       subject: 'Your G3 Network Application - Payment Required',
-      body: '<p>Dear {{applicantName}},</p><p>Congratulations! Your application for <strong>{{churchName}}</strong> has been provisionally approved.</p><p>To complete your membership, please log in to your portal account and submit your annual network dues payment:</p><p><a href="{{portalLink}}">Access Your Church Portal</a></p><p>Once payment is received, you will gain full access to all network benefits.</p><p>Grace and peace,<br>G3 Church Network Team</p>'
+      body: '<p>Dear {{applicantName}},</p><p>Congratulations! We are pleased to inform you that your application for <strong>{{churchName}}</strong> has been <strong>provisionally approved</strong> to join the G3 Church Network.</p><p><strong>Next Steps:</strong></p><ol><li>Set up your church portal account password using the link below</li><li>Log in to your church portal</li><li>Complete your payment ($500 minimum annual dues)</li><li>Once payment is received, your membership will be fully activated</li></ol><p><strong>Set Your Password:</strong><br><a href="{{resetLink}}">Click here to set your password and access the Church Portal</a></p><p>This link is valid for 72 hours. If you have any questions, please don\'t hesitate to reply to this email.</p><p>Grace and peace,<br>G3 Church Network Team</p>'
     },
     application_fully_approved: {
       type: 'application_fully_approved',
       subject: 'Welcome to G3 Church Network - Full Access Granted!',
       body: '<p>Dear {{applicantName}},</p><p>We are excited to welcome <strong>{{churchName}}</strong> as a full member of the G3 Church Network!</p><p>Your payment has been processed and your church is now listed on our network map. You have full access to all member benefits.</p><p>Log in to your dashboard to explore: <a href="{{portalLink}}">Church Portal</a></p><p>Grace and peace,<br>G3 Church Network Team</p>'
+
     },
     installment_reminder_7: {
       type: 'installment_reminder_7',
@@ -473,9 +474,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       setLoadingTemplates(true);
       try {
         const types: EmailType[] = [
-          'application_received', 'application_approved', 'application_rejected',
+          'application_received', 'admin_application_notification',
+          'application_provisional_approved', 'application_fully_approved',
+          'application_approved', 'application_rejected',
+          'portal_account_setup',
           'dues_reminder_30', 'dues_reminder_7', 'dues_reminder_0', 'dues_delinquent',
-          'portal_account_setup' // Added missing template type
+          'installment_reminder_7', 'installment_reminder_0',
+          'installment_delinquent', 'installment_payment_received'
         ];
         const loadedTemplates = { ...templates };
         let hasUpdates = false;
@@ -961,6 +966,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const pendingApps = applications.filter(a => a.status === ApplicationStatus.PENDING);
   const provisionalApps = applications.filter(a => a.status === ApplicationStatus.PROVISIONAL_APPROVED);
   const approvedApps = applications.filter(a => a.status === ApplicationStatus.APPROVED);
+  // Approved churches excluding effectively-delinquent ones, plus dues-exempt DELINQUENT churches (for Active tab)
+  const displayApprovedApps = applications.filter(app => {
+    if (app.status !== ApplicationStatus.APPROVED && app.status !== ApplicationStatus.DELINQUENT) return false;
+    if (app.duesExempt) return true;
+    if (app.status === ApplicationStatus.DELINQUENT) return false;
+    if (app.isManuallyDelinquent) return false;
+    if (!app.stripeSubscriptionId && app.nextDueDate) {
+      const dueDate = new Date(app.nextDueDate);
+      if (dueDate < new Date()) return false;
+    }
+    return true;
+  });
   const rejectedApps = applications.filter(a => a.status === ApplicationStatus.REJECTED);
 
   // Filter and sort church stats (moved here to access approvedApps)
@@ -1027,8 +1044,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         : valB - valA;
     });
 
-  // Filter and sort approved churches
-  const filteredAndSortedApprovedApps = approvedApps
+  // Filter and sort approved churches (uses displayApprovedApps to exclude effectively-delinquent)
+  const filteredAndSortedApprovedApps = displayApprovedApps
     .filter(app => {
       if (!searchQuery) return true;
       const query = searchQuery.toLowerCase();
@@ -1878,6 +1895,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         const oldEmail = church.applicantEmail;
         const newEmail = editedChurch.applicantEmail;
 
+        // Auto-approve if marked as dues exempt
+        if (updates.duesExempt) {
+          updates.isManuallyDelinquent = false;
+          if (updates.status === ApplicationStatus.DELINQUENT) {
+            updates.status = ApplicationStatus.APPROVED;
+          }
+        }
+
         // Auto-clear delinquent status if next due date is in the future
         if (updates.nextDueDate) {
           const nextDue = new Date(updates.nextDueDate);
@@ -2079,7 +2104,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
                     {/* Management Actions */}
                     <div className="flex flex-wrap gap-2">
-                      {isOverdue && (
+                      {isOverdue && !church.duesExempt && (
                         <Button
                           variant="secondary"
                           onClick={() => handleSendDuesReminder(church.id)}
@@ -3155,7 +3180,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 >
                   Active
                   <span className="ml-2 bg-green-100 text-green-800 py-0.5 px-1.5 rounded-full text-xs">
-                    {approvedApps.length}
+                    {displayApprovedApps.length}
                   </span>
                 </button>
                 <button
@@ -3903,7 +3928,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 <div className="bg-white rounded-lg shadow overflow-hidden">
                   <div className="px-6 py-3 bg-gray-50 border-b border-gray-200">
                     <p className="text-sm text-gray-600">
-                      Showing {filteredAndSortedApprovedApps.length} of {approvedApps.length} churches
+                      Showing {filteredAndSortedApprovedApps.length} of {displayApprovedApps.length} churches
                       {searchQuery && ` matching "${searchQuery}"`}
                     </p>
                   </div>
@@ -3944,7 +3969,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                               </td>
                               <td className="px-6 py-4 text-sm">
                                 <div className="flex flex-col gap-1">
-                                  {hasAutoRenewal ? (
+                                  {app.duesExempt ? (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 w-fit">
+                                      Exempt
+                                    </span>
+                                  ) : hasAutoRenewal ? (
                                     <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 w-fit">
                                       <RefreshCw className="w-3 h-3 mr-1" />
                                       Auto-Renewal
@@ -3955,7 +3984,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                                     </span>
                                   )}
 
-                                  {nextDueDate && (
+                                  {!app.duesExempt && nextDueDate && (
                                     <div className={`text-xs font-medium flex items-center ${!hasAutoRenewal && isOverdue ? 'text-red-600' :
                                       !hasAutoRenewal && isDueSoon ? 'text-orange-600' : 'text-gray-500'
                                       }`}>
@@ -4132,12 +4161,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 );
               });
 
-              return filteredDelinquentApps.length === 0 && delinquentSearchQuery ? (
-                <div className="bg-white p-12 rounded-lg shadow-sm text-center border-2 border-dashed border-gray-200">
-                  <AlertTriangle className="w-12 h-12 text-gray-400 mx-auto mb-3 opacity-50" />
-                  <div className="text-gray-500 italic">No delinquent churches found matching "{delinquentSearchQuery}"</div>
-                </div>
-              ) : delinquentApps.length === 0 ? (
+              return delinquentApps.length === 0 ? (
                 <div className="bg-white p-12 rounded-lg shadow-sm text-center border-2 border-dashed border-gray-200">
                   <Check className="w-12 h-12 text-green-500 mx-auto mb-3 opacity-50" />
                   <div className="text-gray-500 italic">No delinquent churches. All dues are current!</div>
@@ -4155,6 +4179,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     />
                   </div>
 
+                  {filteredDelinquentApps.length === 0 ? (
+                    <div className="bg-white p-12 rounded-lg shadow-sm text-center border-2 border-dashed border-gray-200">
+                      <AlertTriangle className="w-12 h-12 text-gray-400 mx-auto mb-3 opacity-50" />
+                      <div className="text-gray-500 italic">No delinquent churches found matching "{delinquentSearchQuery}"</div>
+                    </div>
+                  ) : (
                   <div className="bg-white rounded-lg shadow overflow-hidden">
                     <div className="px-6 py-3 bg-orange-50 border-b border-orange-200">
                       <p className="text-sm text-orange-800 font-medium">
@@ -4186,6 +4216,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       </table>
                     </div>
                   </div>
+                  )}
                 </>
               );
             })()}
@@ -4324,158 +4355,139 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               <p className="text-gray-600">Configure automated email templates sent to churches.</p>
             </div>
 
-            {/* Email Templates Content */}
-            {(
-              <>
-                {loadingTemplates ? (
-                  <div className="flex justify-center p-12"><RefreshCw className="w-8 h-8 animate-spin text-gray-400" /></div>
-                ) : (
-                  <div className="space-y-8">
-                    {/* Application Received Template */}
-                    <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
-                      <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
-                        <h3 className="text-lg font-bold text-gray-900 flex items-center">
-                          <Mail className="w-5 h-5 mr-2 text-gray-500" />
-                          Application Received Email
-                        </h3>
-                        <p className="text-sm text-gray-500 mt-1">Sent automatically when a church submits a new application.</p>
-                      </div>
-                      <div className="p-6 space-y-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
-                          <input
-                            type="text"
-                            value={templates.application_received.subject}
-                            onChange={(e) => setTemplates({
-                              ...templates,
-                              application_received: { ...templates.application_received, subject: e.target.value }
-                            })}
-                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
-                          <textarea
-                            value={templates.application_received.body}
-                            onChange={(e) => setTemplates({
-                              ...templates,
-                              application_received: { ...templates.application_received, body: e.target.value }
-                            })}
-                            rows={6}
-                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
-                          />
-                          <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
-                        </div>
-                        <div className="flex justify-end">
-                          <Button
-                            onClick={() => handleSaveTemplate('application_received')}
-                            isLoading={savingTemplate === 'application_received'}
-                          >
-                            Save Template
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Application Approved Template */}
-                    <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
-                      <div className="bg-green-50 px-6 py-4 border-b border-green-200">
-                        <h3 className="text-lg font-bold text-green-900 flex items-center">
-                          <Check className="w-5 h-5 mr-2 text-green-600" />
-                          Application Approved Email
-                        </h3>
-                        <p className="text-sm text-green-700 mt-1">Sent automatically when you approve an application.</p>
-                      </div>
-                      <div className="p-6 space-y-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
-                          <input
-                            type="text"
-                            value={templates.application_approved.subject}
-                            onChange={(e) => setTemplates({
-                              ...templates,
-                              application_approved: { ...templates.application_approved, subject: e.target.value }
-                            })}
-                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
-                          <textarea
-                            value={templates.application_approved.body}
-                            onChange={(e) => setTemplates({
-                              ...templates,
-                              application_approved: { ...templates.application_approved, body: e.target.value }
-                            })}
-                            rows={6}
-                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
-                          />
-                          <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
-                        </div>
-                        <div className="flex justify-end">
-                          <Button
-                            onClick={() => handleSaveTemplate('application_approved')}
-                            isLoading={savingTemplate === 'application_approved'}
-                          >
-                            Save Template
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Application Rejected Template */}
-                    <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
-                      <div className="bg-red-50 px-6 py-4 border-b border-red-200">
-                        <h3 className="text-lg font-bold text-red-900 flex items-center">
-                          <X className="w-5 h-5 mr-2 text-red-600" />
-                          Application Rejected Email
-                        </h3>
-                        <p className="text-sm text-red-700 mt-1">Sent automatically when you reject an application.</p>
-                      </div>
-                      <div className="p-6 space-y-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
-                          <input
-                            type="text"
-                            value={templates.application_rejected.subject}
-                            onChange={(e) => setTemplates({
-                              ...templates,
-                              application_rejected: { ...templates.application_rejected, subject: e.target.value }
-                            })}
-                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
-                          <textarea
-                            value={templates.application_rejected.body}
-                            onChange={(e) => setTemplates({
-                              ...templates,
-                              application_rejected: { ...templates.application_rejected, body: e.target.value }
-                            })}
-                            rows={6}
-                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
-                          />
-                          <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}</p>
-                        </div>
-                        <div className="flex justify-end">
-                          <Button
-                            onClick={() => handleSaveTemplate('application_rejected')}
-                            isLoading={savingTemplate === 'application_rejected'}
-                          >
-                            Save Template
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Dues Reminder Templates */}
+            {loadingTemplates ? (
+              <div className="flex justify-center p-12"><RefreshCw className="w-8 h-8 animate-spin text-gray-400" /></div>
+            ) : (
+              <div className="space-y-8">
+                {/* Application Flow Section */}
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center">
+                    <Mail className="w-5 h-5 mr-2" />
+                    Application Flow
+                  </h3>
+                  <div className="space-y-6">
                     {[
-                      { type: 'dues_reminder_30' as const, title: 'Dues Reminder (30 Days)', desc: 'Sent 30 days before annual dues expire.' },
-                      { type: 'dues_reminder_7' as const, title: 'Dues Reminder (7 Days)', desc: 'Sent 7 days before annual dues expire.' },
-                      { type: 'dues_reminder_0' as const, title: 'Dues Reminder (Due Today)', desc: 'Sent on the day annual dues expire.' },
-                      { type: 'dues_delinquent' as const, title: 'Delinquency Notice', desc: 'Sent weekly when dues are overdue.' },
-                      { type: 'portal_account_setup' as const, title: 'Portal Account Setup', desc: 'Sent when an admin creates a church portal account.' }
+                      { type: 'application_received' as EmailType, title: 'Application Received', desc: 'Sent automatically when a church submits a new application.', headerCls: 'bg-gray-50 border-gray-200', titleCls: 'text-gray-900', descCls: 'text-gray-500', icon: <Mail className="w-5 h-5 mr-2 text-gray-500" />, vars: '{{applicantName}}, {{churchName}}' },
+                      { type: 'admin_application_notification' as EmailType, title: 'Admin Notification', desc: 'Sent to admins when a new application is submitted.', headerCls: 'bg-blue-50 border-blue-200', titleCls: 'text-blue-900', descCls: 'text-blue-700', icon: <Send className="w-5 h-5 mr-2 text-blue-500" />, vars: '{{applicantName}}, {{churchName}}, {{applicantEmail}}, {{churchAddress}}' },
+                      { type: 'application_provisional_approved' as EmailType, title: 'Provisional Approval', desc: 'Sent when you provisionally approve an application. Includes password setup link.', headerCls: 'bg-orange-50 border-orange-200', titleCls: 'text-orange-900', descCls: 'text-orange-700', icon: <Clock className="w-5 h-5 mr-2 text-orange-500" />, vars: '{{applicantName}}, {{churchName}}, {{resetLink}}' },
+                      { type: 'application_fully_approved' as EmailType, title: 'Full Approval (After Payment)', desc: 'Sent automatically after payment is received and membership is fully activated.', headerCls: 'bg-green-50 border-green-200', titleCls: 'text-green-900', descCls: 'text-green-700', icon: <Star className="w-5 h-5 mr-2 text-green-600" />, vars: '{{applicantName}}, {{churchName}}, {{portalLink}}' },
+                      { type: 'application_approved' as EmailType, title: 'Application Approved (Legacy)', desc: 'Legacy approval email. New flow uses Provisional Approval + Full Approval above.', headerCls: 'bg-green-50 border-green-200', titleCls: 'text-green-900', descCls: 'text-green-700', icon: <Check className="w-5 h-5 mr-2 text-green-600" />, vars: '{{applicantName}}, {{churchName}}' },
+                      { type: 'application_rejected' as EmailType, title: 'Application Rejected', desc: 'Sent when you reject an application.', headerCls: 'bg-red-50 border-red-200', titleCls: 'text-red-900', descCls: 'text-red-700', icon: <X className="w-5 h-5 mr-2 text-red-600" />, vars: '{{applicantName}}, {{churchName}}' },
+                    ].map(({ type, title, desc, headerCls, titleCls, descCls, icon, vars }) => (
+                      <div key={type} className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+                        <div className={`${headerCls} px-6 py-4 border-b`}>
+                          <h3 className={`text-lg font-bold ${titleCls} flex items-center`}>
+                            {icon}
+                            {title}
+                          </h3>
+                          <p className={`text-sm ${descCls} mt-1`}>{desc}</p>
+                        </div>
+                        <div className="p-6 space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
+                            <input
+                              type="text"
+                              value={templates[type]?.subject || ''}
+                              onChange={(e) => setTemplates({
+                                ...templates,
+                                [type]: { ...templates[type], subject: e.target.value }
+                              })}
+                              className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
+                            <textarea
+                              value={templates[type]?.body || ''}
+                              onChange={(e) => setTemplates({
+                                ...templates,
+                                [type]: { ...templates[type], body: e.target.value }
+                              })}
+                              rows={8}
+                              className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
+                            />
+                            <p className="text-xs text-gray-500 mt-1">Available variables: {vars}</p>
+                          </div>
+                          <div className="flex justify-end">
+                            <Button
+                              onClick={() => handleSaveTemplate(type)}
+                              isLoading={savingTemplate === type}
+                            >
+                              Save Template
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Portal & Account Section */}
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center">
+                    <Lock className="w-5 h-5 mr-2" />
+                    Portal & Account
+                  </h3>
+                  <div className="space-y-6">
+                    <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+                      <div className="bg-purple-50 px-6 py-4 border-b border-purple-200">
+                        <h3 className="text-lg font-bold text-purple-900 flex items-center">
+                          <Lock className="w-5 h-5 mr-2 text-purple-600" />
+                          Portal Account Setup
+                        </h3>
+                        <p className="text-sm text-purple-700 mt-1">Sent when an admin manually creates a church portal account (separate from provisional approval).</p>
+                      </div>
+                      <div className="p-6 space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
+                          <input
+                            type="text"
+                            value={templates.portal_account_setup?.subject || ''}
+                            onChange={(e) => setTemplates({
+                              ...templates,
+                              portal_account_setup: { ...templates.portal_account_setup, subject: e.target.value }
+                            })}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
+                          <textarea
+                            value={templates.portal_account_setup?.body || ''}
+                            onChange={(e) => setTemplates({
+                              ...templates,
+                              portal_account_setup: { ...templates.portal_account_setup, body: e.target.value }
+                            })}
+                            rows={8}
+                            className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}, {{churchName}}, {{resetLink}}'}</p>
+                        </div>
+                        <div className="flex justify-end">
+                          <Button
+                            onClick={() => handleSaveTemplate('portal_account_setup')}
+                            isLoading={savingTemplate === 'portal_account_setup'}
+                          >
+                            Save Template
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Annual Dues Section */}
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center">
+                    <AlertTriangle className="w-5 h-5 mr-2" />
+                    Annual Dues Reminders
+                  </h3>
+                  <div className="space-y-6">
+                    {[
+                      { type: 'dues_reminder_30' as EmailType, title: 'Dues Reminder (30 Days)', desc: 'Sent 30 days before annual dues expire.' },
+                      { type: 'dues_reminder_7' as EmailType, title: 'Dues Reminder (7 Days)', desc: 'Sent 7 days before annual dues expire.' },
+                      { type: 'dues_reminder_0' as EmailType, title: 'Dues Reminder (Due Today)', desc: 'Sent on the day annual dues expire.' },
+                      { type: 'dues_delinquent' as EmailType, title: 'Delinquency Notice', desc: 'Sent weekly when annual dues are overdue. Church is hidden from map.' },
                     ].map(({ type, title, desc }) => (
                       <div key={type} className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
                         <div className="bg-yellow-50 px-6 py-4 border-b border-yellow-200">
@@ -4490,7 +4502,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                             <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
                             <input
                               type="text"
-                              value={templates[type].subject}
+                              value={templates[type]?.subject || ''}
                               onChange={(e) => setTemplates({
                                 ...templates,
                                 [type]: { ...templates[type], subject: e.target.value }
@@ -4501,7 +4513,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
                             <textarea
-                              value={templates[type].body}
+                              value={templates[type]?.body || ''}
                               onChange={(e) => setTemplates({
                                 ...templates,
                                 [type]: { ...templates[type], body: e.target.value }
@@ -4509,7 +4521,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                               rows={6}
                               className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
                             />
-                            <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}'}, {'{{churchName}}'}{type === 'portal_account_setup' && ', {{resetLink}}'}</p>
+                            <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}, {{churchName}}'}</p>
                           </div>
                           <div className="flex justify-end">
                             <Button
@@ -4523,8 +4535,69 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       </div>
                     ))}
                   </div>
-                )}
-              </>
+                </div>
+
+                {/* Installment Payment Section */}
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center">
+                    <Briefcase className="w-5 h-5 mr-2" />
+                    Installment Payments
+                  </h3>
+                  <div className="space-y-6">
+                    {[
+                      { type: 'installment_reminder_7' as EmailType, title: 'Installment Reminder (7 Days)', desc: 'Sent 7 days before an installment payment is due.' },
+                      { type: 'installment_reminder_0' as EmailType, title: 'Installment Reminder (Due Today)', desc: 'Sent on the day an installment payment is due.' },
+                      { type: 'installment_delinquent' as EmailType, title: 'Installment Delinquent', desc: 'Sent when an installment payment is overdue.' },
+                      { type: 'installment_payment_received' as EmailType, title: 'Installment Payment Received', desc: 'Sent when an installment payment is successfully processed.' },
+                    ].map(({ type, title, desc }) => (
+                      <div key={type} className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+                        <div className="bg-indigo-50 px-6 py-4 border-b border-indigo-200">
+                          <h3 className="text-lg font-bold text-indigo-900 flex items-center">
+                            <Briefcase className="w-5 h-5 mr-2 text-indigo-600" />
+                            {title}
+                          </h3>
+                          <p className="text-sm text-indigo-700 mt-1">{desc}</p>
+                        </div>
+                        <div className="p-6 space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
+                            <input
+                              type="text"
+                              value={templates[type]?.subject || ''}
+                              onChange={(e) => setTemplates({
+                                ...templates,
+                                [type]: { ...templates[type], subject: e.target.value }
+                              })}
+                              className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Body (HTML)</label>
+                            <textarea
+                              value={templates[type]?.body || ''}
+                              onChange={(e) => setTemplates({
+                                ...templates,
+                                [type]: { ...templates[type], body: e.target.value }
+                              })}
+                              rows={6}
+                              className="w-full rounded-md border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 border p-2 font-mono text-sm"
+                            />
+                            <p className="text-xs text-gray-500 mt-1">Available variables: {'{{applicantName}}, {{churchName}}'}</p>
+                          </div>
+                          <div className="flex justify-end">
+                            <Button
+                              onClick={() => handleSaveTemplate(type)}
+                              isLoading={savingTemplate === type}
+                            >
+                              Save Template
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             )}
           </section>
         )}

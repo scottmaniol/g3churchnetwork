@@ -9,6 +9,7 @@ const ApplicationForm = lazy(() => import('./components/ApplicationForm').then(m
 const AdminDashboard = lazy(() => import('./components/AdminDashboard').then(module => ({ default: module.AdminDashboard })));
 const WorldMap = lazy(() => import('./components/WorldMap').then(module => ({ default: module.WorldMap })));
 const ChurchLogin = lazy(() => import('./components/ChurchLogin').then(module => ({ default: module.ChurchLogin })));
+const SetPassword = lazy(() => import('./components/SetPassword').then(module => ({ default: module.SetPassword })));
 const ChurchDashboard = lazy(() => import('./components/ChurchDashboard').then(module => ({ default: module.ChurchDashboard })));
 const RequirementsModal = lazy(() => import('./components/RequirementsModal').then(module => ({ default: module.RequirementsModal })));
 const JobBoard = lazy(() => import('./components/JobBoard').then(module => ({ default: module.JobBoard })));
@@ -516,6 +517,7 @@ const App: React.FC = () => {
                 />
               }
             />
+            <Route path="/setup-password" element={<SetPassword />} />
             <Route
               path="/dashboard"
               element={
